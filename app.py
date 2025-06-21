@@ -1,8 +1,11 @@
-import subprocess, time, os
+import subprocess
+import time
+import os
 from threading import Thread
 from flask import Flask, send_from_directory
 
 app = Flask(__name__)
+
 HLS_DIR = "/tmp/hls"
 LOGO_FILE = "logo.png"
 FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
@@ -22,6 +25,9 @@ def get_video_duration(url):
 
 def get_video_playlist():
     playlist = []
+    if not os.path.exists("videos.txt"):
+        print("videos.txt not found!")
+        return playlist
     with open("videos.txt", "r") as f:
         urls = [line.strip() for line in f if line.strip()]
         for url in urls:
@@ -44,7 +50,7 @@ def start_ffmpeg_stream():
     while True:
         playlist = get_video_playlist()
         if not playlist:
-            print("Playlist empty.")
+            print("Playlist is empty.")
             time.sleep(10)
             continue
 
@@ -58,7 +64,7 @@ def start_ffmpeg_stream():
             f"text='Now Playing: {title}':"
             "fontcolor=white:fontsize=20:x=10:y=H-th-30:box=1:boxcolor=black@0.5,"
             f"drawtext=fontfile={FONT_PATH}:"
-            "text='%{localtime\\:%H\\\\:%M}':"
+            "text='%{localtime\\:%H\\:%M}':"
             "fontcolor=white:fontsize=20:x=W-tw-20:y=10:box=1:boxcolor=black@0.4"
         )
 
@@ -81,9 +87,11 @@ def start_ffmpeg_stream():
             f"{HLS_DIR}/stream.m3u8"
         ]
 
+        print(f"[INFO] Starting stream: {title} (seek: {seek_time}s)")
         try:
-            process = subprocess.Popen(cmd)
-            process.wait()
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            stdout, stderr = process.communicate()
+            print(stderr.decode())
         except Exception as e:
             print(f"[ERROR] FFmpeg crashed: {e}")
         time.sleep(1)
