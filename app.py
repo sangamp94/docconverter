@@ -1,11 +1,8 @@
-import subprocess
-import time
-import os
+import subprocess, time, os, shlex
 from threading import Thread
 from flask import Flask, send_from_directory
 
 app = Flask(__name__)
-
 HLS_DIR = "/tmp/hls"
 LOGO_FILE = "logo.png"
 FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
@@ -26,7 +23,6 @@ def get_video_duration(url):
 def get_video_playlist():
     playlist = []
     if not os.path.exists("videos.txt"):
-        print("videos.txt not found!")
         return playlist
     with open("videos.txt", "r") as f:
         urls = [line.strip() for line in f if line.strip()]
@@ -50,21 +46,24 @@ def start_ffmpeg_stream():
     while True:
         playlist = get_video_playlist()
         if not playlist:
-            print("Playlist is empty.")
+            print("[INFO] Playlist empty.")
             time.sleep(10)
             continue
 
         url, seek_time = get_current_video_info(playlist)
-        title = url.split("/")[-1][:30]
+        raw_title = url.split("/")[-1][:30]
+        safe_title = shlex.quote(f"Now Playing: {raw_title}")
+
+        print(f"[INFO] Starting stream: {raw_title} (seek: {seek_time}s)")
 
         filters = (
             "[1:v]scale=100:100[logo];"
             "[0:v][logo]overlay=W-w-20:20[video];"
             f"[video]drawtext=fontfile={FONT_PATH}:"
-            f"text='Now Playing: {title}':"
+            f"text={safe_title}:"
             "fontcolor=white:fontsize=20:x=10:y=H-th-30:box=1:boxcolor=black@0.5,"
             f"drawtext=fontfile={FONT_PATH}:"
-            "text='%{localtime\\:%H\\:%M}':"
+            "text='%{localtime\\:%H\\\\:%M}':"
             "fontcolor=white:fontsize=20:x=W-tw-20:y=10:box=1:boxcolor=black@0.4"
         )
 
@@ -87,11 +86,9 @@ def start_ffmpeg_stream():
             f"{HLS_DIR}/stream.m3u8"
         ]
 
-        print(f"[INFO] Starting stream: {title} (seek: {seek_time}s)")
         try:
-            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            stdout, stderr = process.communicate()
-            print(stderr.decode())
+            process = subprocess.Popen(cmd)
+            process.wait()
         except Exception as e:
             print(f"[ERROR] FFmpeg crashed: {e}")
         time.sleep(1)
