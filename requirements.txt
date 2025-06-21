@@ -1,3 +1,1 @@
 flask
-pytelegrambotapi==4.12.0
-pdf2docx
