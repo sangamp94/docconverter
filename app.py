@@ -5,7 +5,6 @@ from flask import Flask, send_from_directory
 app = Flask(__name__)
 HLS_DIR = "/tmp/hls"
 LOGO_FILE = "logo.png"
-FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
 def get_video_duration(url):
     try:
@@ -51,20 +50,12 @@ def start_ffmpeg_stream():
             continue
 
         url, seek_time = get_current_video_info(playlist)
-        raw_title = url.split("/")[-1][:30]
-        safe_title = shlex.quote(f"Now Playing: {raw_title}")
+        print(f"[INFO] Starting stream: {url} (seek: {seek_time}s)")
 
-        print(f"[INFO] Starting stream: {raw_title} (seek: {seek_time}s)")
-
+        # Filter: only add logo overlay, no text
         filters = (
             "[1:v]scale=100:100[logo];"
-            "[0:v][logo]overlay=W-w-20:20[video];"
-            f"[video]drawtext=fontfile={FONT_PATH}:"
-            f"text={safe_title}:"
-            "fontcolor=white:fontsize=20:x=10:y=H-th-30:box=1:boxcolor=black@0.5,"
-            f"drawtext=fontfile={FONT_PATH}:"
-            "text='%{localtime\\:%H\\\\:%M}':"
-            "fontcolor=white:fontsize=20:x=W-tw-20:y=10:box=1:boxcolor=black@0.4"
+            "[0:v][logo]overlay=W-w-20:20"
         )
 
         cmd = [
