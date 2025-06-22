@@ -4,10 +4,15 @@ from flask import Flask, send_from_directory
 
 app = Flask(__name__)
 HLS_DIR = "/tmp/hls"
-LOGO_FILE_RIGHT = "logo.png"   # Top-right
-LOGO_FILE_LEFT = "show.jpg"    # Top-left
+LOGO_FILE_RIGHT = "logo.png"  # Fixed top-right logo
 
 os.makedirs(HLS_DIR, exist_ok=True)
+
+def get_current_show():
+    if not os.path.exists("show.txt"):
+        return None
+    with open("show.txt", "r") as f:
+        return f.read().strip().lower()
 
 def get_video_duration(url):
     try:
@@ -21,11 +26,11 @@ def get_video_duration(url):
         print(f"[ERROR] Duration fetch failed: {e}")
         return 0
 
-def get_video_playlist():
+def get_video_playlist(playlist_file):
     playlist = []
-    if not os.path.exists("videos.txt"):
+    if not os.path.exists(playlist_file):
         return playlist
-    with open("videos.txt", "r", encoding="utf-8") as f:
+    with open(playlist_file, "r", encoding="utf-8") as f:
         urls = [line.strip() for line in f if line.strip()]
         for url in urls:
             duration = get_video_duration(url)
@@ -33,30 +38,27 @@ def get_video_playlist():
                 playlist.append({"url": url, "duration": duration})
     return playlist
 
-def get_current_video_info(playlist):
-    total_duration = sum(v["duration"] for v in playlist)
-    seconds_now = int(time.time()) % int(total_duration)
-
-    for v in playlist:
-        if seconds_now < v["duration"]:
-            return v["url"], int(seconds_now)
-        seconds_now -= int(v["duration"])
-    return playlist[0]["url"], 0 if playlist else ("", 0)
-
-# 🆕 LINEAR PLAY MODE — play one by one, restarting at end
 def play_videos_in_order():
-    playlist = get_video_playlist()
     while True:
-        if not playlist:
-            print("[INFO] Playlist empty, retrying...")
+        show = get_current_show()
+        if not show:
+            print("[INFO] No show specified in show.txt. Waiting...")
             time.sleep(10)
-            playlist = get_video_playlist()
+            continue
+
+        playlist_file = f"{show}.txt"
+        logo_file_left = f"{show}.jpg"
+
+        playlist = get_video_playlist(playlist_file)
+        if not playlist:
+            print(f"[INFO] Playlist file {playlist_file} empty or missing. Waiting...")
+            time.sleep(10)
             continue
 
         for video in playlist:
             url = video["url"]
             duration = int(video["duration"])
-            print(f"[INFO] Playing: {url} (0s to {duration}s)")
+            print(f"[INFO] Playing {show.upper()}: {url} ({duration}s)")
 
             filters = (
                 "[1:v]scale=80:80[rightlogo];"
@@ -72,7 +74,7 @@ def play_videos_in_order():
                 "-re",
                 "-i", url,
                 "-i", LOGO_FILE_RIGHT,
-                "-i", LOGO_FILE_LEFT,
+                "-i", logo_file_left,
                 "-filter_complex", filters,
                 "-c:v", "libx264",
                 "-preset", "ultrafast",
