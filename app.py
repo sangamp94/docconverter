@@ -1,29 +1,27 @@
 import subprocess, time, os
 from threading import Thread
 from flask import Flask, send_from_directory
-from datetime import datetime, time as dt_time, timedelta
+from datetime import datetime, time as dt_time
 import pytz
 
 app = Flask(__name__)
 HLS_DIR = "/tmp/hls"
 LOGO_FILE_RIGHT = "logo.png"  # fixed top-right logo
-
 os.makedirs(HLS_DIR, exist_ok=True)
 
-# Scheduler time zones
+# Timezone
 IST = pytz.timezone('Asia/Kolkata')
 
-# Your schedule with start and end times (24h format) and show names
+# Real-time TV schedule (24-hour format)
 SCHEDULE = [
     ("pokemon",  dt_time(7, 0),  dt_time(12, 0)),
     ("doraemon", dt_time(12, 0), dt_time(15, 0)),
     ("chhota",   dt_time(15, 0), dt_time(18, 0)),
     ("shinchan", dt_time(18, 0), dt_time(20, 0)),
-    ("ramayan",  dt_time(20, 0), dt_time(23, 59, 59, 999999)),  # until midnight
+    ("ramayan",  dt_time(20, 0), dt_time(23, 59, 59)),
 ]
 
 def get_current_show():
-    # Read show.txt as before
     if not os.path.exists("show.txt"):
         return None
     with open("show.txt", "r") as f:
@@ -38,7 +36,6 @@ def get_show_for_now():
     for show, start, end in SCHEDULE:
         if start <= now < end:
             return show
-    # If no match (after midnight before 7AM), return None or default show
     return None
 
 def scheduler_thread():
@@ -49,14 +46,14 @@ def scheduler_thread():
             print(f"[SCHEDULER] Switching show to: {show_now}")
             set_current_show(show_now)
             current_show = show_now
-        time.sleep(30)  # check every 30 seconds
+        time.sleep(30)
 
 def get_video_duration(url):
     try:
         result = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", url],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=15
         )
         return float(result.stdout.strip())
     except Exception as e:
@@ -79,7 +76,7 @@ def play_videos_in_order():
     while True:
         show = get_current_show()
         if not show:
-            print("[INFO] No show specified in show.txt. Waiting...")
+            print("[INFO] No show specified. Waiting...")
             time.sleep(10)
             continue
 
@@ -88,14 +85,29 @@ def play_videos_in_order():
 
         playlist = get_video_playlist(playlist_file)
         if not playlist:
-            print(f"[INFO] Playlist file {playlist_file} empty or missing. Waiting...")
+            print(f"[INFO] Playlist {playlist_file} missing or empty.")
             time.sleep(10)
             continue
 
-        for video in playlist:
+        index = 0
+        while index < len(playlist):
+            video = playlist[index]
             url = video["url"]
             duration = int(video["duration"])
-            print(f"[INFO] Playing {show.upper()}: {url} ({duration}s)")
+
+            # Time left in current show slot
+            now = datetime.now(IST)
+            for s_name, start, end in SCHEDULE:
+                if s_name == show:
+                    end_dt = datetime.combine(now.date(), end, tzinfo=IST)
+                    seconds_left = int((end_dt - now).total_seconds())
+                    break
+            else:
+                seconds_left = duration
+
+            play_time = min(duration, seconds_left)
+
+            print(f"[INFO] Playing {show.upper()}: {url} for {play_time}s")
 
             filters = (
                 "[1:v]scale=80:80[rightlogo];"
@@ -109,6 +121,7 @@ def play_videos_in_order():
                 "-hide_banner",
                 "-loglevel", "error",
                 "-re",
+                "-t", str(play_time),
                 "-i", url,
                 "-i", LOGO_FILE_RIGHT,
                 "-i", logo_file_left,
@@ -127,16 +140,25 @@ def play_videos_in_order():
 
             try:
                 process = subprocess.Popen(cmd)
-                time.sleep(duration)
+                process.wait(timeout=play_time + 5)
+            except subprocess.TimeoutExpired:
+                print("[INFO] Cutting video early to switch show.")
                 process.kill()
-                time.sleep(1)
             except Exception as e:
                 print(f"[ERROR] FFmpeg crashed: {e}")
                 time.sleep(5)
 
+            # If schedule switched mid-loop
+            if get_current_show() != show:
+                print(f"[INFO] Schedule changed. Switching to {get_current_show()}...")
+                break
+
+            index += 1
+
 @app.route('/')
-def root():
-    return "<h1>✅ Streamify Live TV</h1><p><a href='/stream.m3u8'>📺 Watch Live</a></p>"
+def home():
+    show = get_current_show() or "unknown"
+    return f"<h1>📺 Cartoon Live TV</h1><p>🎬 Now Showing: {show.upper()}</p><a href='/stream.m3u8'>▶️ Watch</a>"
 
 @app.route('/stream.m3u8')
 def serve_m3u8():
