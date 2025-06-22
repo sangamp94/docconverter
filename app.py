@@ -4,9 +4,9 @@ from flask import Flask, send_from_directory
 
 app = Flask(__name__)
 HLS_DIR = "/tmp/hls"
-LOGO_FILE = "logo.png"  # Your own logo (goes on opposite side of channel logo)
+LOGO_FILE_RIGHT = "logo.png"   # Top-right
+LOGO_FILE_LEFT = "show.jpg"    # Top-left
 
-# Create required directory
 os.makedirs(HLS_DIR, exist_ok=True)
 
 def get_video_duration(url):
@@ -18,14 +18,13 @@ def get_video_duration(url):
         )
         return float(result.stdout.strip())
     except Exception as e:
-        print(f"[ERROR] Could not get duration for {url}: {e}")
+        print(f"[ERROR] Duration fetch failed: {e}")
         return 0
 
 def get_video_playlist():
     playlist = []
     if not os.path.exists("videos.txt"):
         return playlist
-
     with open("videos.txt", "r", encoding="utf-8") as f:
         urls = [line.strip() for line in f if line.strip()]
         for url in urls:
@@ -42,24 +41,25 @@ def get_current_video_info(playlist):
         if seconds_now < v["duration"]:
             return v["url"], int(seconds_now)
         seconds_now -= int(v["duration"])
-
     return playlist[0]["url"], 0 if playlist else ("", 0)
 
 def start_ffmpeg_stream():
     while True:
         playlist = get_video_playlist()
         if not playlist:
-            print("[INFO] Playlist is empty, waiting...")
+            print("[INFO] Playlist empty, retrying...")
             time.sleep(10)
             continue
 
         url, seek_time = get_current_video_info(playlist)
-        print(f"[INFO] Starting stream: {url} (seek {seek_time}s)")
+        print(f"[INFO] Streaming: {url} (seek: {seek_time}s)")
 
-        # Filter: add logo overlay to **top-left**
+        # FFmpeg filter: logo.png (top-right), show.jpg (top-left)
         filters = (
-            "[1:v]scale=80:80[logo];"
-            "[0:v][logo]overlay=10:10"  # Logo on top-left (opposite side of channel logo)
+            "[1:v]scale=80:80[rightlogo];"
+            "[2:v]scale=80:80[leftlogo];"
+            "[0:v][rightlogo]overlay=W-w-10:10[tmp1];"
+            "[tmp1][leftlogo]overlay=10:10"
         )
 
         cmd = [
@@ -69,7 +69,8 @@ def start_ffmpeg_stream():
             "-ss", str(seek_time),
             "-re",
             "-i", url,
-            "-i", LOGO_FILE,
+            "-i", LOGO_FILE_RIGHT,
+            "-i", LOGO_FILE_LEFT,
             "-filter_complex", filters,
             "-c:v", "libx264",
             "-preset", "ultrafast",
