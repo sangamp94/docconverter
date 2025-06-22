@@ -1,54 +1,38 @@
-import subprocess, time, os, json, shutil
+import subprocess, time, os, shutil, urllib.parse
 from threading import Thread
 from flask import Flask, send_from_directory
-from datetime import datetime, time as dt_time, timedelta
+from datetime import datetime
 import pytz
 
 app = Flask(__name__)
 HLS_DIR = "/tmp/hls"
-SCHEDULE_LOG = "schedule_log.json"
-os.makedirs(HLS_DIR, exist_ok=True)
+LOGO_FILE = "logo.png"
+NOW_POSTER = "now.jpg"
+TIMEZONE = pytz.timezone("Asia/Kolkata")
 
-IST = pytz.timezone("Asia/Kolkata")
+# Schedule: 24-hour format → filename (in root)
+SCHEDULE = {
+    "09:00": "pokemon.txt",
+    "12:00": "doraemon.txt",
+    "15:00": "chhota.txt",
+    "18:00": "shinchan.txt"
+}
 
-SCHEDULE = [
-    ("pokemon",  dt_time(7, 0),  dt_time(12, 0)),
-    ("doraemon", dt_time(12, 0), dt_time(13, 0)),
-    ("pokemon",  dt_time(13, 0), dt_time(15, 0)),
-    ("chhota",   dt_time(15, 0), dt_time(18, 0)),
-    ("shinchan", dt_time(18, 0), dt_time(20, 0)),
-    ("ramayan",  dt_time(20, 0), dt_time(23, 59, 59)),
-]
-
-def get_current_show():
-    if not os.path.exists("show.txt"):
-        return None
-    with open("show.txt", "r") as f:
-        return f.read().strip().lower()
-
-def set_current_show(show):
-    with open("show.txt", "w") as f:
-        f.write(show)
-
-def get_show_for_now():
-    now = datetime.now(IST).time()
-    for show, start, end in SCHEDULE:
-        if start <= now < end or (end < start and (now >= start or now < end)):
-            return show, start.strftime("%H:%M"), start, end
-    return None, None, None, None
-
-def scheduler_thread():
-    current_show = None
-    while True:
-        show_now, _, _, _ = get_show_for_now()
-        if show_now != current_show and show_now is not None:
-            print(f"[SCHEDULER] Switching to: {show_now}")
-            set_current_show(show_now)
-            current_show = show_now
-        time.sleep(10)
+def get_current_playlist_file():
+    now = datetime.now(TIMEZONE)
+    current_minutes = now.hour * 60 + now.minute
+    latest_time = None
+    selected_file = None
+    for time_str, file in SCHEDULE.items():
+        h, m = map(int, time_str.split(":"))
+        start_minutes = h * 60 + m
+        if current_minutes >= start_minutes:
+            if latest_time is None or start_minutes > latest_time:
+                latest_time = start_minutes
+                selected_file = file
+    return selected_file if selected_file and os.path.exists(selected_file) else None
 
 def get_video_duration(url):
-    print(f"[DEBUG] Checking duration for: {url}")
     try:
         result = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -57,155 +41,120 @@ def get_video_duration(url):
         )
         return float(result.stdout.strip())
     except Exception as e:
-        print(f"[ERROR] Duration fetch failed: {e}")
+        print(f"[ERROR] Duration check failed: {e}")
         return 0
 
-def get_video_playlist(file):
-    print(f"[DEBUG] Reading playlist: {file}")
+def get_video_playlist(playlist_file):
     playlist = []
-    if not os.path.exists(file):
-        print(f"[ERROR] Playlist file missing: {file}")
-        return playlist
-    with open(file, "r", encoding="utf-8") as f:
-        for line in f:
-            url = line.strip()
-            if url:
-                duration = get_video_duration(url)
-                if duration > 0:
-                    playlist.append({"url": url, "duration": duration})
+    with open(playlist_file, "r", encoding="utf-8") as f:
+        urls = [line.strip() for line in f if line.strip()]
+        for url in urls:
+            duration = get_video_duration(url)
+            if duration > 0:
+                playlist.append({"url": url, "duration": duration})
     return playlist
 
-def clear_hls_stream():
-    print("[DEBUG] Clearing old HLS stream")
-    for f in os.listdir(HLS_DIR):
-        path = os.path.join(HLS_DIR, f)
-        if os.path.isfile(path):
-            os.remove(path)
+def get_current_video_info(playlist):
+    total_duration = sum(v["duration"] for v in playlist)
+    if total_duration == 0:
+        return playlist[0]["url"], 0
+    seconds_now = int(time.time()) % int(total_duration)
+    for v in playlist:
+        if seconds_now < v["duration"]:
+            return v["url"], int(seconds_now)
+        seconds_now -= int(v["duration"])
+    return playlist[0]["url"], 0
 
-def play_videos_in_order():
-    current_show = None
-    ffmpeg_process = None
+def update_now_poster(url):
+    episode = os.path.basename(urllib.parse.unquote(url)).replace(".mp4", ".jpg")
+    episode_path = os.path.join("posters", episode)
+    if os.path.exists(episode_path):
+        shutil.copyfile(episode_path, NOW_POSTER)
+    elif os.path.exists("default.jpg"):
+        shutil.copyfile("default.jpg", NOW_POSTER)
+    else:
+        print("[WARN] No poster found for now.jpg")
+
+def start_ffmpeg_stream():
+    shutil.rmtree(HLS_DIR, ignore_errors=True)
+    os.makedirs(HLS_DIR, exist_ok=True)
 
     while True:
-        show = get_current_show()
-        if not show:
-            print("[INFO] No current show found.")
-            time.sleep(5)
+        playlist_file = get_current_playlist_file()
+        if not playlist_file:
+            print("[ERROR] No valid playlist file found.")
+            time.sleep(30)
             continue
 
-        if show != current_show:
-            if ffmpeg_process:
-                print(f"[SWITCH] Killing FFmpeg for previous show: {current_show}")
-                ffmpeg_process.kill()
-                ffmpeg_process = None
-            clear_hls_stream()
-            current_show = show
+        show_name = os.path.splitext(os.path.basename(playlist_file))[0]
+        show_poster = f"{show_name}.jpg"
+        if not os.path.exists(show_poster):
+            print(f"[WARN] Poster for {show_name} not found. Using default.")
+            show_poster = "default.jpg"
 
-        playlist_file = f"{show}.txt"
         playlist = get_video_playlist(playlist_file)
         if not playlist:
-            print(f"[ERROR] Playlist empty for show: {show}")
-            time.sleep(5)
+            print("[ERROR] Playlist is empty.")
+            time.sleep(30)
             continue
 
-        index = 0
-        offset = 0
+        url, seek_time = get_current_video_info(playlist)
+        update_now_poster(url)
+        print(f"\n🎬 Streaming: {os.path.basename(url)} from {playlist_file}")
 
-        while index < len(playlist):
-            if get_current_show() != show:
-                print(f"[INTERRUPT] Show changed during playback: {get_current_show()}")
-                break
+        filters = (
+            "[1:v]scale=100:100[logo];"
+            "[2:v]scale=200:300[now];"
+            "[3:v]scale=200:300[show];"
+            "[0:v][logo]overlay=W-w-20:20[tmp1];"
+            "[tmp1][now]overlay=20:H-h-20[tmp2];"
+            "[tmp2][show]overlay=W-w-20:H-h-20"
+        )
 
-            video = playlist[index]
-            url = video["url"]
-            duration = int(video["duration"])
+        cmd = [
+            "ffmpeg",
+            "-ss", str(seek_time),
+            "-re",
+            "-i", url,
+            "-i", LOGO_FILE,
+            "-i", NOW_POSTER,
+            "-i", show_poster,
+            "-filter_complex", filters,
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-tune", "zerolatency",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-f", "hls",
+            "-hls_time", "10",
+            "-hls_list_size", "5",
+            "-hls_flags", "delete_segments",
+            "-hls_start_number_source", "epoch",
+            f"{HLS_DIR}/stream.m3u8"
+        ]
 
-            now_dt = datetime.now(IST)
-            _, _, start, end = get_show_for_now()
-            today = now_dt.date()
-
-            if start and end:
-                start_dt = datetime.combine(today, start, tzinfo=IST)
-                end_dt = datetime.combine(today, end, tzinfo=IST)
-                if end < start:
-                    end_dt += timedelta(days=1)
-                if now_dt >= end_dt:
-                    print(f"[SKIP] Current time is past end time. Skipping {show}.")
-                    break
-                time_left = int((end_dt - now_dt).total_seconds())
-            else:
-                time_left = duration
-
-            remaining = duration - offset
-            play_time = min(remaining, time_left)
-
-            print(f"[DEBUG] Duration={duration}, Offset={offset}, Remaining={remaining}, TimeLeft={time_left}, PlayTime={play_time}")
-
-            if play_time <= 0 or remaining <= 0 or time_left <= 0:
-                print("[WARN] Skipping due to invalid time values.")
-                index += 1
-                offset = 0
-                continue
-
-            print(f"[PLAYING] {show.upper()} - Episode {index+1} from {offset}s for {play_time}s")
-
-            cmd = [
-                "ffmpeg",
-                "-hide_banner",
-                "-loglevel", "error",
-                "-ss", str(offset),
-                "-re",
-                "-t", str(play_time),
-                "-i", url,
-                "-c:v", "libx264",
-                "-preset", "ultrafast",
-                "-tune", "zerolatency",
-                "-c:a", "aac",
-                "-b:a", "128k",
-                "-f", "hls",
-                "-hls_time", "4",
-                "-hls_list_size", "3",
-                "-hls_flags", "delete_segments",
-                "-hls_allow_cache", "0",
-                f"{HLS_DIR}/stream.m3u8"
-            ]
-
-            try:
-                ffmpeg_process = subprocess.Popen(cmd)
-                start_time = time.time()
-                while time.time() - start_time < play_time:
-                    if get_current_show() != show:
-                        print(f"[FORCE STOP] New show: {get_current_show()}")
-                        ffmpeg_process.kill()
-                        clear_hls_stream()
-                        break
-                    if ffmpeg_process.poll() is not None:
-                        break
-                    time.sleep(1)
-                offset += int(time.time() - start_time)
-                if offset >= duration:
-                    index += 1
-                    offset = 0
-            except Exception as e:
-                print(f"[ERROR] FFmpeg failed: {e}")
-                time.sleep(5)
-                break
+        try:
+            process = subprocess.Popen(cmd)
+            process.wait()
+        except Exception as e:
+            print(f"[ERROR] FFmpeg crashed: {e}")
+        time.sleep(1)
 
 @app.route('/')
 def home():
-    show = get_current_show()
-    now = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
-    return f"<h1>📺 Cartoon Live TV</h1><p>🕒 {now}<br>🎬 Now Showing: <b>{show.upper() if show else 'None'}</b></p><a href='/stream.m3u8'>▶️ Watch</a>"
+    now = datetime.now(TIMEZONE).strftime("%H:%M")
+    playlist_file = get_current_playlist_file()
+    show_name = os.path.basename(playlist_file).replace(".txt", "") if playlist_file else "Unknown"
+    return f"<h1>📺 Cartoon Live TV</h1><p>🕒 {now} | 🎬 Now Showing: {show_name}</p><a href='/stream.m3u8'>▶️ Watch Stream</a>"
 
 @app.route('/stream.m3u8')
-def serve_m3u8():
+def m3u8():
     return send_from_directory(HLS_DIR, "stream.m3u8")
 
 @app.route('/<path:filename>')
-def serve_file(filename):
+def ts_files(filename):
     return send_from_directory(HLS_DIR, filename)
 
 if __name__ == "__main__":
-    Thread(target=scheduler_thread, daemon=True).start()
-    Thread(target=play_videos_in_order, daemon=True).start()
+    Thread(target=start_ffmpeg_stream, daemon=True).start()
     app.run(host="0.0.0.0", port=10000)
