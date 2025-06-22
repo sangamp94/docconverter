@@ -1,15 +1,18 @@
-import subprocess, time, os, shutil
+import os, subprocess, time, shutil
+from flask import Flask, request, render_template_string, redirect, url_for, send_from_directory
 from threading import Thread
-from flask import Flask, send_from_directory
 from datetime import datetime
 import pytz
 
 app = Flask(__name__)
+app.config['UPLOAD_FOLDER'] = 'uploads'
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
 HLS_DIR = "/tmp/hls"
-LOGO_FILE = "logo.png"
+LOGO_FILE = os.path.join(app.config['UPLOAD_FOLDER'], "logo.png")
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
-# Schedule: time → playlist file
+# Time-based schedule: "HH:MM" → file
 SCHEDULE = {
     "09:00": "pokemon.txt",
     "12:00": "doraemon.txt",
@@ -20,16 +23,16 @@ SCHEDULE = {
 def get_current_playlist_file():
     now = datetime.now(TIMEZONE)
     current_minutes = now.hour * 60 + now.minute
-    latest_time = None
     selected_file = None
+    latest_time = -1
     for time_str, file in SCHEDULE.items():
         h, m = map(int, time_str.split(":"))
-        start_minutes = h * 60 + m
-        if current_minutes >= start_minutes:
-            if latest_time is None or start_minutes > latest_time:
-                latest_time = start_minutes
-                selected_file = file
-    return selected_file if selected_file and os.path.exists(selected_file) else None
+        minutes = h * 60 + m
+        if current_minutes >= minutes > latest_time:
+            latest_time = minutes
+            selected_file = file
+    path = os.path.join(app.config['UPLOAD_FOLDER'], selected_file)
+    return path if selected_file and os.path.exists(path) else None
 
 def get_video_duration(url):
     try:
@@ -39,24 +42,23 @@ def get_video_duration(url):
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=15
         )
         return float(result.stdout.strip())
-    except Exception as e:
-        print(f"[ERROR] Duration check failed: {e}")
+    except:
         return 0
 
 def get_video_playlist(playlist_file):
     playlist = []
     with open(playlist_file, "r", encoding="utf-8") as f:
-        urls = [line.strip() for line in f if line.strip()]
-        for url in urls:
-            duration = get_video_duration(url)
-            if duration > 0:
-                playlist.append({"url": url, "duration": duration})
+        for line in f:
+            url = line.strip()
+            if url:
+                duration = get_video_duration(url)
+                if duration > 0:
+                    playlist.append({"url": url, "duration": duration})
     return playlist
 
 def get_current_video_info(playlist):
     total_duration = sum(v["duration"] for v in playlist)
-    if total_duration == 0:
-        return playlist[0]["url"], 0
+    if total_duration == 0: return playlist[0]["url"], 0
     seconds_now = int(time.time()) % int(total_duration)
     for v in playlist:
         if seconds_now < v["duration"]:
@@ -67,34 +69,29 @@ def get_current_video_info(playlist):
 def start_ffmpeg_stream():
     shutil.rmtree(HLS_DIR, ignore_errors=True)
     os.makedirs(HLS_DIR, exist_ok=True)
-
     while True:
         playlist_file = get_current_playlist_file()
         if not playlist_file:
             print("[ERROR] No valid playlist file found.")
             time.sleep(30)
             continue
-
         show_name = os.path.splitext(os.path.basename(playlist_file))[0]
-        show_poster = f"{show_name}.jpg"
-        if not os.path.exists(show_poster):
-            print(f"[WARN] Poster for {show_name} not found. Using default.jpg")
-            show_poster = "default.jpg"
+        poster_file = os.path.join(app.config['UPLOAD_FOLDER'], f"{show_name}.jpg")
+        if not os.path.exists(poster_file):
+            poster_file = os.path.join(app.config['UPLOAD_FOLDER'], "default.jpg")
 
         playlist = get_video_playlist(playlist_file)
         if not playlist:
             print("[ERROR] Playlist is empty.")
             time.sleep(30)
             continue
-
         url, seek_time = get_current_video_info(playlist)
-        print(f"\n🎬 Streaming: {os.path.basename(url)} from {playlist_file}")
 
         filters = (
             "[1:v]scale=100:100[logo];"
-            "[2:v]scale=160:120[show];"
+            "[2:v]scale=160:120[poster];"
             "[0:v][logo]overlay=W-w-20:20[tmp1];"
-            "[tmp1][show]overlay=20:20"
+            "[tmp1][poster]overlay=20:20"
         )
 
         cmd = [
@@ -103,41 +100,69 @@ def start_ffmpeg_stream():
             "-re",
             "-i", url,
             "-i", LOGO_FILE,
-            "-i", show_poster,
+            "-i", poster_file,
             "-filter_complex", filters,
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
+            "-c:v", "libx264", "-preset", "ultrafast",
             "-tune", "zerolatency",
-            "-c:a", "aac",
-            "-b:a", "128k",
-            "-f", "hls",
-            "-hls_time", "10",
-            "-hls_list_size", "5",
-            "-hls_flags", "delete_segments",
-            "-hls_start_number_source", "epoch",
+            "-c:a", "aac", "-b:a", "128k",
+            "-f", "hls", "-hls_time", "10",
+            "-hls_list_size", "5", "-hls_flags", "delete_segments",
             f"{HLS_DIR}/stream.m3u8"
         ]
-
+        print(f"▶️ Playing: {url}")
         try:
-            process = subprocess.Popen(cmd)
-            process.wait()
+            subprocess.run(cmd)
         except Exception as e:
-            print(f"[ERROR] FFmpeg crashed: {e}")
+            print(f"[ERROR] FFmpeg crash: {e}")
         time.sleep(1)
 
-@app.route('/')
+@app.route("/")
 def home():
     now = datetime.now(TIMEZONE).strftime("%H:%M")
     playlist_file = get_current_playlist_file()
-    show_name = os.path.basename(playlist_file).replace(".txt", "") if playlist_file else "Unknown"
-    return f"<h1>📺 Cartoon Live TV</h1><p>🕒 {now} | 🎬 Now Showing: {show_name}</p><a href='/stream.m3u8'>▶️ Watch Stream</a>"
+    show = os.path.basename(playlist_file) if playlist_file else "N/A"
+    return f"<h1>🖥 Live Cartoon TV</h1><p>⏰ {now} | 📺 {show}</p><a href='/stream.m3u8'>▶️ Watch Live</a><br><a href='/admin'>⚙️ Admin Panel</a>"
 
-@app.route('/stream.m3u8')
-def m3u8():
+@app.route("/admin", methods=["GET", "POST"])
+def admin():
+    msg = ""
+    if request.method == "POST":
+        file = request.files.get("file")
+        if file:
+            fname = file.filename
+            if fname.endswith((".txt", ".jpg", ".png")):
+                save_path = os.path.join(app.config['UPLOAD_FOLDER'], fname)
+                file.save(save_path)
+                msg = f"✅ Uploaded {fname}"
+            else:
+                msg = "❌ Only .txt, .jpg, .png allowed."
+    files = os.listdir(app.config['UPLOAD_FOLDER'])
+    html = """
+    <h2>⚙️ Admin Panel</h2>
+    <form method=post enctype=multipart/form-data>
+      <input type=file name=file><input type=submit value=Upload>
+    </form>
+    <p>{{msg}}</p>
+    <h3>📂 Uploaded Files:</h3>
+    <ul>
+      {% for f in files %}
+        <li><a href='/uploads/{{f}}' target='_blank'>{{f}}</a></li>
+      {% endfor %}
+    </ul>
+    <a href='/'>⬅️ Back</a>
+    """
+    return render_template_string(html, msg=msg, files=files)
+
+@app.route("/uploads/<path:filename>")
+def uploads(filename):
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+
+@app.route("/stream.m3u8")
+def stream():
     return send_from_directory(HLS_DIR, "stream.m3u8")
 
-@app.route('/<path:filename>')
-def ts_files(filename):
+@app.route("/<path:filename>")
+def stream_files(filename):
     return send_from_directory(HLS_DIR, filename)
 
 if __name__ == "__main__":
