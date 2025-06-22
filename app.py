@@ -1,18 +1,55 @@
 import subprocess, time, os
 from threading import Thread
 from flask import Flask, send_from_directory
+from datetime import datetime, time as dt_time, timedelta
+import pytz
 
 app = Flask(__name__)
 HLS_DIR = "/tmp/hls"
-LOGO_FILE_RIGHT = "logo.png"  # Fixed top-right logo
+LOGO_FILE_RIGHT = "logo.png"  # fixed top-right logo
 
 os.makedirs(HLS_DIR, exist_ok=True)
 
+# Scheduler time zones
+IST = pytz.timezone('Asia/Kolkata')
+
+# Your schedule with start and end times (24h format) and show names
+SCHEDULE = [
+    ("pokemon",  dt_time(7, 0),  dt_time(12, 0)),
+    ("doraemon", dt_time(12, 0), dt_time(15, 0)),
+    ("chhota",   dt_time(15, 0), dt_time(18, 0)),
+    ("shinchan", dt_time(18, 0), dt_time(20, 0)),
+    ("ramayan",  dt_time(20, 0), dt_time(23, 59, 59, 999999)),  # until midnight
+]
+
 def get_current_show():
+    # Read show.txt as before
     if not os.path.exists("show.txt"):
         return None
     with open("show.txt", "r") as f:
         return f.read().strip().lower()
+
+def set_current_show(show):
+    with open("show.txt", "w") as f:
+        f.write(show)
+
+def get_show_for_now():
+    now = datetime.now(IST).time()
+    for show, start, end in SCHEDULE:
+        if start <= now < end:
+            return show
+    # If no match (after midnight before 7AM), return None or default show
+    return None
+
+def scheduler_thread():
+    current_show = None
+    while True:
+        show_now = get_show_for_now()
+        if show_now != current_show and show_now is not None:
+            print(f"[SCHEDULER] Switching show to: {show_now}")
+            set_current_show(show_now)
+            current_show = show_now
+        time.sleep(30)  # check every 30 seconds
 
 def get_video_duration(url):
     try:
@@ -110,5 +147,6 @@ def serve_segments(filename):
     return send_from_directory(HLS_DIR, filename)
 
 if __name__ == "__main__":
+    Thread(target=scheduler_thread, daemon=True).start()
     Thread(target=play_videos_in_order, daemon=True).start()
     app.run(host="0.0.0.0", port=10000)
