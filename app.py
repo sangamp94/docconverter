@@ -1,69 +1,107 @@
-from flask import Flask, request, send_file, render_template_string
-from app.py.editor import VideoFileClip, ImageClip, CompositeVideoClip
-import os
+import subprocess, time, os
+from threading import Thread
+from flask import Flask, send_from_directory
 
 app = Flask(__name__)
+HLS_DIR = "/tmp/hls"
+LOGO_FILE = "logo.png"  # Your own logo (goes on opposite side of channel logo)
 
-UPLOAD_FOLDER = 'uploads'
-OUTPUT_FOLDER = 'output'
-STATIC_FOLDER = 'static'
+# Create required directory
+os.makedirs(HLS_DIR, exist_ok=True)
 
-# Ensure folders exist
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+def get_video_duration(url):
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", url],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+        return float(result.stdout.strip())
+    except Exception as e:
+        print(f"[ERROR] Could not get duration for {url}: {e}")
+        return 0
 
-# Simple upload form
-HTML_FORM = '''
-<!doctype html>
-<title>Upload Episode</title>
-<h2>Upload an Episode</h2>
-<form method=post enctype=multipart/form-data>
-  <input type=file name=video><br><br>
-  <input type=submit value=Upload>
-</form>
-{% if download_url %}
-  <br><a href="{{ download_url }}">Download Processed Video</a>
-{% endif %}
-'''
+def get_video_playlist():
+    playlist = []
+    if not os.path.exists("videos.txt"):
+        return playlist
 
-@app.route('/', methods=['GET', 'POST'])
-def upload_video():
-    if request.method == 'POST':
-        video_file = request.files['video']
-        if video_file:
-            video_path = os.path.join(UPLOAD_FOLDER, 'episode1.mp4')
-            output_path = os.path.join(OUTPUT_FOLDER, 'output.mp4')
+    with open("videos.txt", "r", encoding="utf-8") as f:
+        urls = [line.strip() for line in f if line.strip()]
+        for url in urls:
+            duration = get_video_duration(url)
+            if duration > 0:
+                playlist.append({"url": url, "duration": duration})
+    return playlist
 
-            # Save uploaded file
-            video_file.save(video_path)
+def get_current_video_info(playlist):
+    total_duration = sum(v["duration"] for v in playlist)
+    seconds_now = int(time.time()) % int(total_duration)
 
-            # Process video with logos
-            process_video(video_path, output_path)
+    for v in playlist:
+        if seconds_now < v["duration"]:
+            return v["url"], int(seconds_now)
+        seconds_now -= int(v["duration"])
 
-            return render_template_string(HTML_FORM, download_url='/download')
-    
-    return render_template_string(HTML_FORM)
+    return playlist[0]["url"], 0 if playlist else ("", 0)
 
-@app.route('/download')
-def download_video():
-    return send_file(os.path.join(OUTPUT_FOLDER, 'output.mp4'), as_attachment=True)
+def start_ffmpeg_stream():
+    while True:
+        playlist = get_video_playlist()
+        if not playlist:
+            print("[INFO] Playlist is empty, waiting...")
+            time.sleep(10)
+            continue
 
-def process_video(video_path, output_path):
-    video = VideoFileClip(video_path)
+        url, seek_time = get_current_video_info(playlist)
+        print(f"[INFO] Starting stream: {url} (seek {seek_time}s)")
 
-    # Load logos
-    left_logo = ImageClip(os.path.join(STATIC_FOLDER, 'pokemon_logo.png')).set_duration(video.duration)
-    right_logo = ImageClip(os.path.join(STATIC_FOLDER, 'channel_logo.png')).set_duration(video.duration)
+        # Filter: add logo overlay to **top-left**
+        filters = (
+            "[1:v]scale=80:80[logo];"
+            "[0:v][logo]overlay=10:10"  # Logo on top-left (opposite side of channel logo)
+        )
 
-    # Resize both logos to same height
-    left_logo = left_logo.resize(height=60).set_position(("left", "top")).margin(left=10, top=10)
-    right_logo = right_logo.resize(height=60).set_position(("right", "top")).margin(right=10, top=10)
+        cmd = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel", "error",
+            "-ss", str(seek_time),
+            "-re",
+            "-i", url,
+            "-i", LOGO_FILE,
+            "-filter_complex", filters,
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-tune", "zerolatency",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-f", "hls",
+            "-hls_time", "10",
+            "-hls_list_size", "5",
+            "-hls_flags", "delete_segments+omit_endlist",
+            f"{HLS_DIR}/stream.m3u8"
+        ]
 
-    # Overlay logos
-    final = CompositeVideoClip([video, left_logo, right_logo])
+        try:
+            process = subprocess.Popen(cmd)
+            process.wait()
+        except Exception as e:
+            print(f"[ERROR] FFmpeg crashed: {e}")
+        time.sleep(1)
 
-    # Export
-    final.write_videofile(output_path, codec="libx264", audio_codec="aac")
+@app.route('/')
+def root():
+    return "<h1>✅ Streamify Live TV</h1><p><a href='/stream.m3u8'>📺 Watch Live</a></p>"
 
-if __name__ == '__main__':
-    app.run(debug=True)
+@app.route('/stream.m3u8')
+def serve_m3u8():
+    return send_from_directory(HLS_DIR, "stream.m3u8")
+
+@app.route('/<path:filename>')
+def serve_segments(filename):
+    return send_from_directory(HLS_DIR, filename)
+
+if __name__ == "__main__":
+    Thread(target=start_ffmpeg_stream, daemon=True).start()
+    app.run(host="0.0.0.0", port=10000)
