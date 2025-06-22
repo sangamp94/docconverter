@@ -92,9 +92,9 @@ def start_ffmpeg_stream():
 
         filters = (
             "[1:v]scale=100:100[logo];"
-            "[2:v]scale=200:300[show];"
+            "[2:v]scale=160:120[show];"
             "[0:v][logo]overlay=W-w-20:20[tmp1];"
-            "[tmp1][show]overlay=W-w-20:H-h-20"
+            "[tmp1][show]overlay=20:20"
         )
 
         cmd = [
