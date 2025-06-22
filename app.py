@@ -43,53 +43,57 @@ def get_current_video_info(playlist):
         seconds_now -= int(v["duration"])
     return playlist[0]["url"], 0 if playlist else ("", 0)
 
-def start_ffmpeg_stream():
+# 🆕 LINEAR PLAY MODE — play one by one, restarting at end
+def play_videos_in_order():
+    playlist = get_video_playlist()
     while True:
-        playlist = get_video_playlist()
         if not playlist:
             print("[INFO] Playlist empty, retrying...")
             time.sleep(10)
+            playlist = get_video_playlist()
             continue
 
-        url, seek_time = get_current_video_info(playlist)
-        print(f"[INFO] Streaming: {url} (seek: {seek_time}s)")
+        for video in playlist:
+            url = video["url"]
+            duration = int(video["duration"])
+            print(f"[INFO] Playing: {url} (0s to {duration}s)")
 
-        # FFmpeg filter: logo.png (top-right), show.jpg (top-left)
-        filters = (
-            "[1:v]scale=80:80[rightlogo];"
-            "[2:v]scale=80:80[leftlogo];"
-            "[0:v][rightlogo]overlay=W-w-10:10[tmp1];"
-            "[tmp1][leftlogo]overlay=10:10"
-        )
+            filters = (
+                "[1:v]scale=80:80[rightlogo];"
+                "[2:v]scale=80:80[leftlogo];"
+                "[0:v][rightlogo]overlay=W-w-10:10[tmp1];"
+                "[tmp1][leftlogo]overlay=10:10"
+            )
 
-        cmd = [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel", "error",
-            "-ss", str(seek_time),
-            "-re",
-            "-i", url,
-            "-i", LOGO_FILE_RIGHT,
-            "-i", LOGO_FILE_LEFT,
-            "-filter_complex", filters,
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-tune", "zerolatency",
-            "-c:a", "aac",
-            "-b:a", "128k",
-            "-f", "hls",
-            "-hls_time", "10",
-            "-hls_list_size", "5",
-            "-hls_flags", "delete_segments+omit_endlist",
-            f"{HLS_DIR}/stream.m3u8"
-        ]
+            cmd = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel", "error",
+                "-re",
+                "-i", url,
+                "-i", LOGO_FILE_RIGHT,
+                "-i", LOGO_FILE_LEFT,
+                "-filter_complex", filters,
+                "-c:v", "libx264",
+                "-preset", "ultrafast",
+                "-tune", "zerolatency",
+                "-c:a", "aac",
+                "-b:a", "128k",
+                "-f", "hls",
+                "-hls_time", "10",
+                "-hls_list_size", "5",
+                "-hls_flags", "delete_segments+omit_endlist",
+                f"{HLS_DIR}/stream.m3u8"
+            ]
 
-        try:
-            process = subprocess.Popen(cmd)
-            process.wait()
-        except Exception as e:
-            print(f"[ERROR] FFmpeg crashed: {e}")
-        time.sleep(1)
+            try:
+                process = subprocess.Popen(cmd)
+                time.sleep(duration)
+                process.kill()
+                time.sleep(1)
+            except Exception as e:
+                print(f"[ERROR] FFmpeg crashed: {e}")
+                time.sleep(5)
 
 @app.route('/')
 def root():
@@ -104,5 +108,5 @@ def serve_segments(filename):
     return send_from_directory(HLS_DIR, filename)
 
 if __name__ == "__main__":
-    Thread(target=start_ffmpeg_stream, daemon=True).start()
+    Thread(target=play_videos_in_order, daemon=True).start()
     app.run(host="0.0.0.0", port=10000)
