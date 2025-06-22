@@ -32,7 +32,9 @@ SCHEDULE = {
 
     "18:00": "shinchan.txt",
 
-    "20:35": "pokemon.txt"
+    "20:35": "pokemon.txt",
+    
+    "23:00": "doraemon.txt"
 
 }
 
