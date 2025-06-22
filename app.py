@@ -1,7 +1,7 @@
 import subprocess, time, os, json, shutil
 from threading import Thread
 from flask import Flask, send_from_directory
-from datetime import datetime, time as dt_time
+from datetime import datetime, time as dt_time, timedelta
 import pytz
 
 app = Flask(__name__)
@@ -33,14 +33,14 @@ def set_current_show(show):
 def get_show_for_now():
     now = datetime.now(IST).time()
     for show, start, end in SCHEDULE:
-        if start <= now < end:
-            return show, start.strftime("%H:%M")
-    return None, None
+        if start <= now < end or (end < start and (now >= start or now < end)):
+            return show, start.strftime("%H:%M"), start, end
+    return None, None, None, None
 
 def scheduler_thread():
     current_show = None
     while True:
-        show_now, _ = get_show_for_now()
+        show_now, _, _, _ = get_show_for_now()
         if show_now != current_show and show_now is not None:
             print(f"[SCHEDULER] Switching to: {show_now}")
             set_current_show(show_now)
@@ -120,13 +120,21 @@ def play_videos_in_order():
             url = video["url"]
             duration = int(video["duration"])
 
-            now = datetime.now(IST)
-            time_left = 600  # fallback default
-            for s_name, start, end in SCHEDULE:
-                if s_name == show:
-                    end_dt = datetime.combine(now.date(), end, tzinfo=IST)
-                    time_left = int((end_dt - now).total_seconds())
+            now_dt = datetime.now(IST)
+            _, _, start, end = get_show_for_now()
+            today = now_dt.date()
+
+            if start and end:
+                start_dt = datetime.combine(today, start, tzinfo=IST)
+                end_dt = datetime.combine(today, end, tzinfo=IST)
+                if end < start:
+                    end_dt += timedelta(days=1)
+                if now_dt >= end_dt:
+                    print(f"[SKIP] Current time is past end time. Skipping {show}.")
                     break
+                time_left = int((end_dt - now_dt).total_seconds())
+            else:
+                time_left = duration
 
             remaining = duration - offset
             play_time = min(remaining, time_left)
