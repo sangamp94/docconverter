@@ -119,17 +119,27 @@ def play_videos_in_order():
             video = playlist[index]
             url = video["url"]
             duration = int(video["duration"])
-            print(f"[PLAYING] {show.upper()} Episode {index+1} ({duration}s)")
 
             now = datetime.now(IST)
-            time_left = 600  # default fallback
+            time_left = 600  # fallback default
             for s_name, start, end in SCHEDULE:
                 if s_name == show:
                     end_dt = datetime.combine(now.date(), end, tzinfo=IST)
                     time_left = int((end_dt - now).total_seconds())
                     break
 
-            play_time = min(duration - offset, time_left)
+            remaining = duration - offset
+            play_time = min(remaining, time_left)
+
+            print(f"[DEBUG] Duration={duration}, Offset={offset}, Remaining={remaining}, TimeLeft={time_left}, PlayTime={play_time}")
+
+            if play_time <= 0 or remaining <= 0 or time_left <= 0:
+                print("[WARN] Skipping due to invalid time values.")
+                index += 1
+                offset = 0
+                continue
+
+            print(f"[PLAYING] {show.upper()} - Episode {index+1} from {offset}s for {play_time}s")
 
             cmd = [
                 "ffmpeg",
