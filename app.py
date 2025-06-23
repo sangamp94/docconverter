@@ -88,7 +88,6 @@ def start_ffmpeg_stream():
             time.sleep(10)
             continue
 
-        # calculate remaining play time
         now = datetime.now(TIMEZONE)
         current_minutes = now.hour * 60 + now.minute
         sorted_times = sorted(SCHEDULE.items())
@@ -109,13 +108,10 @@ def start_ffmpeg_stream():
         show_logo = f"{show_name}.jpg"
         channel_logo = "logo.png"
 
-        inputs = [
-            "ffmpeg", "-ss", str(start_offset), "-i", video_url
-        ]
+        inputs = ["ffmpeg", "-ss", str(start_offset), "-i", video_url]
         input_index = 1
         filters = []
 
-        # overlay show logo (top-left)
         if os.path.exists(show_logo):
             inputs += ["-i", show_logo]
             filters.append(f"[0:v][{input_index}:v]overlay=10:10[tmp1]")
@@ -123,16 +119,11 @@ def start_ffmpeg_stream():
         else:
             filters.append("[0:v]null[tmp1]")
 
-        # overlay channel logo (top-right)
         if os.path.exists(channel_logo):
             inputs += ["-i", channel_logo]
-            filters.append(f"[tmp1][{input_index}:v]overlay=W-w-10:10[tmp2]")
-            final = "[tmp2]"
+            filters.append(f"[tmp1][{input_index}:v]overlay=W-w-10:10[out]")
         else:
-            final = "[tmp1]"
-
-        # draw "Now Playing" text at bottom
-        filters.append(f"{final}drawtext=text='Now Playing':fontcolor=white:fontsize=24:x=10:y=H-th-10[out]")
+            filters[-1] = filters[-1].replace("[tmp1]", "[out]")
 
         cmd = inputs + [
             "-filter_complex", ";".join(filters),
@@ -148,7 +139,7 @@ def start_ffmpeg_stream():
         process = subprocess.Popen(cmd)
         process.wait()
 
-        # update state
+        # update playback position
         if start_offset + actual_duration >= video_duration:
             state[show_file]["index"] += 1
             state[show_file]["offset"] = 0
