@@ -16,6 +16,7 @@ SCHEDULE = {
     "09:00": "pokemon.txt",
     "10:45": "chhota.txt",
     "12:00": "doraemon.txt",
+    "12:00": "ps11.txt",
     "15:00": "chhota.txt",
     "18:00": "shinchan.txt",
 }
@@ -114,11 +115,11 @@ def start_ffmpeg_stream():
 
         if os.path.exists(show_logo):
             inputs += ["-i", show_logo]
-            filter_cmds.append(f"[{input_index}:v]scale=100:40[showlogo]")
+            filter_cmds.append(f"[{input_index}:v]scale=120:45[showlogo]")
             input_index += 1
         if os.path.exists(channel_logo):
             inputs += ["-i", channel_logo]
-            filter_cmds.append(f"[{input_index}:v]scale=100:40[channellogo]")
+            filter_cmds.append(f"[{input_index}:v]scale=150:60[channellogo]")
             input_index += 1
 
         overlay_chain = "[0:v]"
