@@ -3,7 +3,7 @@ import time
 import os
 from threading import Thread
 from flask import Flask, send_from_directory, render_template_string
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 import signal
 
@@ -11,7 +11,6 @@ app = Flask(__name__)
 HLS_DIR = "/tmp/hls"
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
-# Schedule format: "HH:MM" -> playlist filename
 SCHEDULE = {
     "09:00": "pokemon.txt",
     "10:45": "chhota.txt",
@@ -26,44 +25,71 @@ os.makedirs(HLS_DIR, exist_ok=True)
 def get_current_show():
     now = datetime.now(TIMEZONE)
     current_minutes = now.hour * 60 + now.minute
-    sorted_times = sorted(SCHEDULE.items())
+    sorted_schedule = sorted(SCHEDULE.items())
 
-    for i, (time_str, show_file) in enumerate(sorted_times):
+    for i, (time_str, show_file) in enumerate(sorted_schedule):
         start = int(time_str.split(":")[0]) * 60 + int(time_str.split(":")[1])
-        end_index = (i + 1) % len(sorted_times)
-        end = int(sorted_times[end_index][0].split(":")[0]) * 60 + int(sorted_times[end_index][0].split(":")[1])
+        end_index = (i + 1) % len(sorted_schedule)
+        end = int(sorted_schedule[end_index][0].split(":")[0]) * 60 + int(sorted_schedule[end_index][0].split(":")[1])
         if end <= start:
             end += 24 * 60
         if start <= current_minutes < end:
             return show_file
     return None
 
-def run_ffmpeg_live_stream(video_url):
-    # Clean up previous HLS files
+def run_ffmpeg_with_logos(video_url, show_name):
+    # Clean previous HLS files
     for f in os.listdir(HLS_DIR):
         try:
             os.remove(os.path.join(HLS_DIR, f))
         except:
             pass
 
-    cmd = [
-        "ffmpeg",
-        "-re",                  # read input at native rate to simulate live
-        "-i", video_url,
+    logo_file = "logo.png"
+    show_logo_file = f"{show_name}.jpg"
+
+    inputs = ["ffmpeg", "-re", "-i", video_url]
+    filters = []
+    input_idx = 1
+
+    if os.path.exists(show_logo_file):
+        inputs += ["-i", show_logo_file]
+        filters.append(f"[{input_idx}:v]scale=200:105[showlogo]")
+        input_idx += 1
+
+    if os.path.exists(logo_file):
+        inputs += ["-i", logo_file]
+        filters.append(f"[{input_idx}:v]scale=200:105[channellogo]")
+        input_idx += 1
+
+    # overlay chain
+    overlay = "[0:v]"
+    if os.path.exists(show_logo_file):
+        overlay += "[showlogo]overlay=10:10[tmp1];"
+    else:
+        overlay += "null[tmp1];"
+
+    if os.path.exists(logo_file):
+        overlay += "[tmp1][channellogo]overlay=W-w-10:10[out]"
+    else:
+        overlay = overlay.replace("[tmp1];", "[out]")
+
+    filter_complex = ";".join(filters) + ";" + overlay if filters else overlay
+
+    cmd = inputs + [
+        "-filter_complex", filter_complex,
+        "-map", "[out]", "-map", "0:a?",
         "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-crf", "28",
         "-c:a", "aac",
+        "-preset", "ultrafast",
         "-f", "hls",
-        "-hls_time", "4",           # 4-second segments
-        "-hls_list_size", "5",      # keep last 5 segments (sliding window)
+        "-hls_time", "4",
+        "-hls_list_size", "5",
         "-hls_flags", "delete_segments+omit_endlist+independent_segments+program_date_time",
-        os.path.join(HLS_DIR, "stream.m3u8"),
+        os.path.join(HLS_DIR, "stream.m3u8")
     ]
 
-    print(f"[INFO] Starting ffmpeg for {video_url}")
-    process = subprocess.Popen(cmd)
-    return process
+    return subprocess.Popen(cmd)
 
 def streaming_loop():
     current_process = None
@@ -75,9 +101,7 @@ def streaming_loop():
         show_file = get_current_show()
 
         if show_file != current_show:
-            # Show changed, stop old ffmpeg and start new show
             if current_process:
-                print(f"[INFO] Stopping ffmpeg for previous show {current_show}")
                 current_process.send_signal(signal.SIGINT)
                 current_process.wait()
                 current_process = None
@@ -86,51 +110,40 @@ def streaming_loop():
             episode_index = 0
 
             if current_show:
-                # Load playlist episodes
                 try:
                     with open(current_show, "r") as f:
                         playlist = [line.strip() for line in f if line.strip()]
-                    print(f"[INFO] Scheduled show: {current_show} with {len(playlist)} episodes")
-                except Exception as e:
-                    print(f"[ERROR] Cannot load playlist {current_show}: {e}")
+                except:
                     playlist = []
             else:
                 playlist = []
 
         if current_show and playlist:
             if episode_index >= len(playlist):
-                print(f"[INFO] Finished all episodes in {current_show}, waiting for next schedule")
-                # Wait for schedule change
+                print(f"[INFO] Finished all episodes for {current_show}, waiting for next show")
                 time.sleep(10)
                 continue
 
             video_url = playlist[episode_index]
-            current_process = run_ffmpeg_live_stream(video_url)
-            # Wait for ffmpeg to finish streaming this episode
-            retcode = current_process.wait()
-
-            if retcode != 0:
-                print(f"[ERROR] ffmpeg exited with code {retcode}, restarting stream")
-            else:
-                print(f"[INFO] Finished episode {episode_index + 1} of {current_show}")
-
+            show_name = current_show.replace(".txt", "")
+            current_process = run_ffmpeg_with_logos(video_url, show_name)
+            print(f"[INFO] Streaming {video_url} for {show_name}")
+            current_process.wait()
             episode_index += 1
         else:
-            print("[INFO] No show scheduled or empty playlist, waiting 30 seconds")
+            print("[INFO] No valid show or playlist. Sleeping.")
             time.sleep(30)
 
 @app.route("/")
 def index():
     return render_template_string("""
     <html>
-    <head><title>Streamify TV - Live</title></head>
+    <head><title>Streamify TV</title></head>
     <body style="background:black; color:white; text-align:center;">
-        <h1>📺 Streamify TV - Live</h1>
-        <video width="640" height="360" controls autoplay muted>
+        <h1>📺 Streamify TV</h1>
+        <video width="640" height="360" controls autoplay muted playsinline>
             <source src="/stream.m3u8" type="application/vnd.apple.mpegurl">
-            Your browser does not support the video tag.
         </video>
-        <p>Currently streaming live scheduled shows.</p>
     </body>
     </html>
     """)
