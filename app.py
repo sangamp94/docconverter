@@ -1,7 +1,4 @@
-import subprocess
-import time
-import os
-import json
+import subprocess, time, os, json
 from threading import Thread
 from flask import Flask, send_from_directory, render_template_string
 from datetime import datetime
@@ -9,7 +6,11 @@ import pytz
 
 app = Flask(__name__)
 HLS_DIR = "/tmp/hls"
-STATE_FILE = "state.json"
+os.makedirs(HLS_DIR, exist_ok=True)
+
+STATE_FILE = "data/state.json"
+os.makedirs("data", exist_ok=True)
+
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
 SCHEDULE = {
@@ -20,8 +21,6 @@ SCHEDULE = {
     "15:00": "chhota.txt",
     "18:00": "shinchan.txt",
 }
-
-os.makedirs(HLS_DIR, exist_ok=True)
 
 def load_state():
     if os.path.exists(STATE_FILE):
@@ -58,7 +57,8 @@ def get_video_duration(url):
             "-of", "default=noprint_wrappers=1:nokey=1", url
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
         return float(result.stdout.strip())
-    except:
+    except Exception as e:
+        print(f"[ERROR] Cannot get video duration: {e}")
         return 0
 
 def get_next_episode(state):
@@ -68,6 +68,7 @@ def get_next_episode(state):
 
     state.setdefault(show_file, {"index": 0, "offset": 0})
     playlist = open(show_file).read().strip().splitlines()
+
     index = state[show_file]["index"]
     offset = state[show_file]["offset"]
 
@@ -79,35 +80,28 @@ def get_next_episode(state):
 
 def start_ffmpeg_stream():
     state = load_state()
-    last_show_file = None
 
     while True:
         show_file = get_current_show()
         if not show_file:
-            time.sleep(5)
+            print("[INFO] No show scheduled.")
+            time.sleep(10)
             continue
 
-        # Reset if new show started
-        if show_file != last_show_file:
-            print(f"[INFO] Switched to new show: {show_file}")
-            state[show_file] = {"index": 0, "offset": 0}
-            last_show_file = show_file
+        now = datetime.now(TIMEZONE)
+        current_minutes = now.hour * 60 + now.minute
+        sorted_times = sorted(SCHEDULE.items())
+        show_start = int([k for k, v in sorted_times if v == show_file][0].split(":")[0]) * 60 + int([k for k, v in sorted_times if v == show_file][0].split(":")[1])
+        next_index = (list(SCHEDULE.values()).index(show_file) + 1) % len(sorted_times)
+        show_end = int(sorted_times[next_index][0].split(":")[0]) * 60 + int(sorted_times[next_index][0].split(":")[1])
+        if show_end <= show_start:
+            show_end += 24 * 60
+        remaining_time = (show_end - current_minutes) * 60
 
         show_file, video_url, start_offset = get_next_episode(state)
         if not video_url:
             time.sleep(5)
             continue
-
-        # Calculate remaining time in current time block
-        now = datetime.now(TIMEZONE)
-        current_minutes = now.hour * 60 + now.minute
-        sorted_times = sorted(SCHEDULE.items())
-        start = int([k for k, v in sorted_times if v == show_file][0].split(":")[0]) * 60 + int([k for k, v in sorted_times if v == show_file][0].split(":")[1])
-        end_index = (list(SCHEDULE.values()).index(show_file) + 1) % len(sorted_times)
-        end = int(sorted_times[end_index][0].split(":")[0]) * 60 + int(sorted_times[end_index][0].split(":")[1])
-        if end <= start:
-            end += 24 * 60
-        remaining_time = (end - current_minutes) * 60
 
         video_duration = get_video_duration(video_url)
         play_time = video_duration - start_offset
@@ -118,7 +112,8 @@ def start_ffmpeg_stream():
         show_name = show_file.replace(".txt", "")
         show_logo = f"{show_name}.jpg"
         channel_logo = "logo.png"
-        inputs = ["ffmpeg", "-re", "-ss", str(start_offset), "-i", video_url]
+
+        inputs = ["ffmpeg", "-ss", str(start_offset), "-i", video_url]
         filter_cmds = []
         input_index = 1
 
@@ -131,17 +126,17 @@ def start_ffmpeg_stream():
             filter_cmds.append(f"[{input_index}:v]scale=200:100[channellogo]")
             input_index += 1
 
-        overlay = "[0:v]"
+        overlay_chain = "[0:v]"
         if os.path.exists(show_logo):
-            overlay += "[showlogo]overlay=10:10[tmp1];"
+            overlay_chain += "[showlogo]overlay=10:10[tmp1];"
         else:
-            overlay += "null[tmp1];"
+            overlay_chain += "null[tmp1];"
         if os.path.exists(channel_logo):
-            overlay += "[tmp1][channellogo]overlay=W-w-10:10[out]"
+            overlay_chain += "[tmp1][channellogo]overlay=W-w-10:10[out]"
         else:
-            overlay = overlay.replace("[tmp1];", "[out]")
+            overlay_chain = overlay_chain.replace("[tmp1];", "[out]")
 
-        filter_complex = ";".join(filter_cmds) + ";" + overlay
+        filter_complex = ";".join(filter_cmds) + ";" + overlay_chain
 
         cmd = inputs + [
             "-filter_complex", filter_complex,
@@ -149,27 +144,20 @@ def start_ffmpeg_stream():
             "-c:v", "libx264", "-c:a", "aac",
             "-f", "hls",
             "-hls_time", "5",
-            "-hls_list_size", "5",
+            "-hls_list_size", "10",
             "-hls_flags", "delete_segments+omit_endlist",
             os.path.join(HLS_DIR, "stream.m3u8")
         ]
 
         process = subprocess.Popen(cmd)
-        start_time = time.time()
+        process.wait()
 
-        while True:
-            time.sleep(5)
-            if get_current_show() != show_file or (time.time() - start_time >= actual_duration):
-                process.terminate()
-                process.wait()
-                break
-
-        elapsed = time.time() - start_time
-        if start_offset + elapsed >= video_duration:
+        # update playback state
+        if start_offset + actual_duration >= video_duration:
             state[show_file]["index"] += 1
             state[show_file]["offset"] = 0
         else:
-            state[show_file]["offset"] += elapsed
+            state[show_file]["offset"] += actual_duration
 
         save_state(state)
 
