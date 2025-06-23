@@ -1,4 +1,4 @@
-import subprocess, time, os, json
+import subprocess, time, os
 from threading import Thread
 from flask import Flask, send_from_directory, render_template_string
 from datetime import datetime
@@ -7,9 +7,6 @@ import pytz
 app = Flask(__name__)
 HLS_DIR = "/tmp/hls"
 os.makedirs(HLS_DIR, exist_ok=True)
-
-STATE_FILE = "data/state.json"
-os.makedirs("data", exist_ok=True)
 
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
@@ -21,19 +18,6 @@ SCHEDULE = {
     "15:00": "chhota.txt",
     "18:00": "shinchan.txt",
 }
-
-def load_state():
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE, "r") as f:
-                return json.load(f)
-        except:
-            return {}
-    return {}
-
-def save_state(state):
-    with open(STATE_FILE, "w") as f:
-        json.dump(state, f)
 
 def get_current_show():
     now = datetime.now(TIMEZONE)
@@ -61,59 +45,57 @@ def get_video_duration(url):
         print(f"[ERROR] Cannot get video duration: {e}")
         return 0
 
-def get_next_episode(state):
-    show_file = get_current_show()
-    if not show_file:
-        return None, None, 0
-
-    state.setdefault(show_file, {"index": 0, "offset": 0})
-    playlist = open(show_file).read().strip().splitlines()
-
-    index = state[show_file]["index"]
-    offset = state[show_file]["offset"]
-
-    if index >= len(playlist):
-        index = 0
-        offset = 0
-
-    return show_file, playlist[index], offset
-
 def start_ffmpeg_stream():
-    state = load_state()
+    last_show = None
+    process = None
 
     while True:
-        show_file = get_current_show()
-        if not show_file:
-            print("[INFO] No show scheduled.")
+        current_show = get_current_show()
+
+        if current_show != last_show:
+            print(f"[INFO] Switched to new show: {current_show}")
+            if process:
+                process.kill()
+            last_show = current_show
+
+        if not current_show:
+            print("[INFO] No show scheduled")
+            time.sleep(5)
+            continue
+
+        try:
+            with open(current_show) as f:
+                playlist = f.read().strip().splitlines()
+        except:
+            print(f"[ERROR] Playlist file {current_show} not found")
             time.sleep(10)
             continue
+
+        if not playlist:
+            print(f"[WARNING] Empty playlist: {current_show}")
+            time.sleep(10)
+            continue
+
+        video_url = playlist[0]  # Always play first video from list
+        duration = get_video_duration(video_url)
 
         now = datetime.now(TIMEZONE)
         current_minutes = now.hour * 60 + now.minute
         sorted_times = sorted(SCHEDULE.items())
-        show_start = int([k for k, v in sorted_times if v == show_file][0].split(":")[0]) * 60 + int([k for k, v in sorted_times if v == show_file][0].split(":")[1])
-        next_index = (list(SCHEDULE.values()).index(show_file) + 1) % len(sorted_times)
+        show_start = int([k for k, v in sorted_times if v == current_show][0].split(":")[0]) * 60 + int([k for k, v in sorted_times if v == current_show][0].split(":")[1])
+        next_index = (list(SCHEDULE.values()).index(current_show) + 1) % len(sorted_times)
         show_end = int(sorted_times[next_index][0].split(":")[0]) * 60 + int(sorted_times[next_index][0].split(":")[1])
         if show_end <= show_start:
             show_end += 24 * 60
         remaining_time = (show_end - current_minutes) * 60
 
-        show_file, video_url, start_offset = get_next_episode(state)
-        if not video_url:
-            time.sleep(5)
-            continue
+        actual_duration = min(duration, remaining_time)
 
-        video_duration = get_video_duration(video_url)
-        play_time = video_duration - start_offset
-        actual_duration = min(play_time, remaining_time)
-
-        print(f"[INFO] Now Playing: {video_url} ({actual_duration:.1f}s from {start_offset:.1f}s)")
-
-        show_name = show_file.replace(".txt", "")
+        show_name = current_show.replace(".txt", "")
         show_logo = f"{show_name}.jpg"
         channel_logo = "logo.png"
 
-        inputs = ["ffmpeg", "-ss", str(start_offset), "-i", video_url]
+        inputs = ["ffmpeg", "-ss", "0", "-i", video_url]
         filter_cmds = []
         input_index = 1
 
@@ -139,6 +121,7 @@ def start_ffmpeg_stream():
         filter_complex = ";".join(filter_cmds) + ";" + overlay_chain
 
         cmd = inputs + [
+            "-t", str(actual_duration),
             "-filter_complex", filter_complex,
             "-map", "[out]", "-map", "0:a?",
             "-c:v", "libx264", "-c:a", "aac",
@@ -152,20 +135,11 @@ def start_ffmpeg_stream():
         process = subprocess.Popen(cmd)
         process.wait()
 
-        # update playback state
-        if start_offset + actual_duration >= video_duration:
-            state[show_file]["index"] += 1
-            state[show_file]["offset"] = 0
-        else:
-            state[show_file]["offset"] += actual_duration
-
-        save_state(state)
-
 @app.route("/")
 def index():
     return render_template_string("""
     <html>
-    <head><title>📺 Streamify TV</title></head>
+    <head><title>📺 Live TV</title></head>
     <body style="background:black; color:white; text-align:center;">
         <h1>📺 Streamify TV</h1>
         <video width="640" height="360" controls autoplay>
