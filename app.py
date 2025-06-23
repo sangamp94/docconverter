@@ -109,24 +109,32 @@ def start_ffmpeg_stream():
         channel_logo = "logo.png"
 
         inputs = ["ffmpeg", "-ss", str(start_offset), "-i", video_url]
+        filter_cmds = []
         input_index = 1
-        filters = []
 
         if os.path.exists(show_logo):
             inputs += ["-i", show_logo]
-            filters.append(f"[0:v][{input_index}:v]overlay=10:10[tmp1]")
+            filter_cmds.append(f"[{input_index}:v]scale=100:40[showlogo]")
             input_index += 1
-        else:
-            filters.append("[0:v]null[tmp1]")
-
         if os.path.exists(channel_logo):
             inputs += ["-i", channel_logo]
-            filters.append(f"[tmp1][{input_index}:v]overlay=W-w-10:10[out]")
+            filter_cmds.append(f"[{input_index}:v]scale=100:40[channellogo]")
+            input_index += 1
+
+        overlay_chain = "[0:v]"
+        if os.path.exists(show_logo):
+            overlay_chain += "[showlogo]overlay=10:10[tmp1];"
         else:
-            filters[-1] = filters[-1].replace("[tmp1]", "[out]")
+            overlay_chain += "null[tmp1];"
+        if os.path.exists(channel_logo):
+            overlay_chain += "[tmp1][channellogo]overlay=W-w-10:10[out]"
+        else:
+            overlay_chain = overlay_chain.replace("[tmp1];", "[out]")
+
+        filter_complex = ";".join(filter_cmds) + ";" + overlay_chain
 
         cmd = inputs + [
-            "-filter_complex", ";".join(filters),
+            "-filter_complex", filter_complex,
             "-map", "[out]", "-map", "0:a?",
             "-c:v", "libx264", "-c:a", "aac",
             "-f", "hls",
