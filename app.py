@@ -1,9 +1,6 @@
-import subprocess
-import time
-import os
-import json
+import subprocess, time, os, json
 from threading import Thread
-from flask import Flask, send_from_directory, render_template_string
+from flask import Flask, send_from_directory, render_template_string, Response
 from datetime import datetime
 import pytz
 
@@ -109,7 +106,15 @@ def start_ffmpeg_stream():
         show_logo = f"{show_name}.jpg"
         channel_logo = "logo.png"
 
-        inputs = ["ffmpeg", "-ss", str(start_offset), "-i", video_url]
+        inputs = [
+            "ffmpeg",
+            "-reconnect", "1",
+            "-reconnect_streamed", "1",
+            "-reconnect_delay_max", "5",
+            "-timeout", "5000000",
+            "-ss", str(start_offset),
+            "-i", video_url
+        ]
         filter_cmds = []
         input_index = 1
 
@@ -140,15 +145,14 @@ def start_ffmpeg_stream():
             "-c:v", "libx264", "-c:a", "aac",
             "-f", "hls",
             "-hls_time", "5",
-            "-hls_list_size", "10",
-            "-hls_flags", "delete_segments+omit_endlist",
+            "-hls_list_size", "6",
+            "-hls_flags", "delete_segments+omit_endlist+program_date_time",
             os.path.join(HLS_DIR, "stream.m3u8")
         ]
 
         process = subprocess.Popen(cmd)
         process.wait()
 
-        # update playback position
         if start_offset + actual_duration >= video_duration:
             state[show_file]["index"] += 1
             state[show_file]["offset"] = 0
@@ -173,7 +177,19 @@ def index():
 
 @app.route("/<path:path>")
 def serve_file(path):
-    return send_from_directory(HLS_DIR, path)
+    file_path = os.path.join(HLS_DIR, path)
+    if not os.path.exists(file_path):
+        return "Not found", 404
+    with open(file_path, "rb") as f:
+        data = f.read()
+    response = Response(
+        data,
+        mimetype="application/vnd.apple.mpegurl" if path.endswith(".m3u8") else "video/MP2T"
+    )
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 if __name__ == "__main__":
     Thread(target=start_ffmpeg_stream, daemon=True).start()
