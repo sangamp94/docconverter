@@ -1,4 +1,6 @@
-import subprocess, time, os
+import subprocess
+import time
+import os
 from threading import Thread
 from flask import Flask, send_from_directory, render_template_string
 from datetime import datetime
@@ -6,10 +8,9 @@ import pytz
 
 app = Flask(__name__)
 HLS_DIR = "/tmp/hls"
-os.makedirs(HLS_DIR, exist_ok=True)
-
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
+# Schedule: time (HH:MM) → playlist file
 SCHEDULE = {
     "09:00": "pokemon.txt",
     "10:45": "chhota.txt",
@@ -18,6 +19,8 @@ SCHEDULE = {
     "15:00": "chhota.txt",
     "18:00": "shinchan.txt",
 }
+
+os.makedirs(HLS_DIR, exist_ok=True)
 
 def get_current_show():
     now = datetime.now(TIMEZONE)
@@ -31,8 +34,8 @@ def get_current_show():
         if end <= start:
             end += 24 * 60
         if start <= current_minutes < end:
-            return show_file
-    return None
+            return show_file, (current_minutes - start) * 60, (end - current_minutes) * 60
+    return None, 0, 0
 
 def get_video_duration(url):
     try:
@@ -46,56 +49,52 @@ def get_video_duration(url):
         return 0
 
 def start_ffmpeg_stream():
-    last_show = None
-    process = None
-
     while True:
-        current_show = get_current_show()
-
-        if current_show != last_show:
-            print(f"[INFO] Switched to new show: {current_show}")
-            if process:
-                process.kill()
-            last_show = current_show
-
-        if not current_show:
-            print("[INFO] No show scheduled")
-            time.sleep(5)
+        show_file, elapsed_time, remaining_time = get_current_show()
+        if not show_file:
+            print("[INFO] No show scheduled.")
+            time.sleep(10)
             continue
 
         try:
-            with open(current_show) as f:
-                playlist = f.read().strip().splitlines()
+            playlist = open(show_file).read().strip().splitlines()
         except:
-            print(f"[ERROR] Playlist file {current_show} not found")
+            print(f"[ERROR] Cannot read {show_file}")
             time.sleep(10)
             continue
 
-        if not playlist:
-            print(f"[WARNING] Empty playlist: {current_show}")
+        cumulative = 0
+        selected = None
+        for video in playlist:
+            duration = get_video_duration(video)
+            if cumulative + duration > elapsed_time:
+                offset = elapsed_time - cumulative
+                selected = (video, offset)
+                break
+            cumulative += duration
+
+        if not selected:
+            print("[INFO] No episode fits the current time slot.")
             time.sleep(10)
             continue
 
-        video_url = playlist[0]  # Always play first video from list
-        duration = get_video_duration(video_url)
+        video_url, start_offset = selected
+        video_duration = get_video_duration(video_url)
+        play_time = video_duration - start_offset
+        actual_duration = min(play_time, remaining_time)
 
-        now = datetime.now(TIMEZONE)
-        current_minutes = now.hour * 60 + now.minute
-        sorted_times = sorted(SCHEDULE.items())
-        show_start = int([k for k, v in sorted_times if v == current_show][0].split(":")[0]) * 60 + int([k for k, v in sorted_times if v == current_show][0].split(":")[1])
-        next_index = (list(SCHEDULE.values()).index(current_show) + 1) % len(sorted_times)
-        show_end = int(sorted_times[next_index][0].split(":")[0]) * 60 + int(sorted_times[next_index][0].split(":")[1])
-        if show_end <= show_start:
-            show_end += 24 * 60
-        remaining_time = (show_end - current_minutes) * 60
+        if actual_duration <= 0:
+            print("[INFO] Skipping — no time left.")
+            time.sleep(5)
+            continue
 
-        actual_duration = min(duration, remaining_time)
+        print(f"[PLAY] {video_url} (start: {start_offset:.1f}s, play: {actual_duration:.1f}s)")
 
-        show_name = current_show.replace(".txt", "")
+        show_name = show_file.replace(".txt", "")
         show_logo = f"{show_name}.jpg"
         channel_logo = "logo.png"
 
-        inputs = ["ffmpeg", "-ss", "0", "-i", video_url]
+        inputs = ["ffmpeg", "-re", "-ss", str(start_offset), "-i", video_url]
         filter_cmds = []
         input_index = 1
 
@@ -124,24 +123,26 @@ def start_ffmpeg_stream():
             "-t", str(actual_duration),
             "-filter_complex", filter_complex,
             "-map", "[out]", "-map", "0:a?",
-            "-c:v", "libx264", "-c:a", "aac",
-            "-f", "hls",
-            "-hls_time", "5",
-            "-hls_list_size", "10",
+            "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
+            "-f", "hls", "-hls_time", "5", "-hls_list_size", "10",
             "-hls_flags", "delete_segments+omit_endlist",
             os.path.join(HLS_DIR, "stream.m3u8")
         ]
 
-        process = subprocess.Popen(cmd)
-        process.wait()
+        try:
+            process = subprocess.Popen(cmd)
+            process.wait()
+        except Exception as e:
+            print(f"[ERROR] FFmpeg crashed: {e}")
+            time.sleep(5)
 
 @app.route("/")
 def index():
     return render_template_string("""
     <html>
-    <head><title>📺 Live TV</title></head>
+    <head><title>📺 Streamify Live</title></head>
     <body style="background:black; color:white; text-align:center;">
-        <h1>📺 Streamify TV</h1>
+        <h1>📺 Streamify Live TV</h1>
         <video width="640" height="360" controls autoplay>
             <source src="/stream.m3u8" type="application/vnd.apple.mpegurl">
         </video>
