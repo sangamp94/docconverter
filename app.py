@@ -13,6 +13,7 @@ STATE_FILE = "playback_state.json"
 
 SCHEDULE = {
     "09:00": "pokemon.txt",
+    "10:15": "chhota.txt",
     "12:00": "doraemon.txt",
     "15:00": "chhota.txt",
     "18:00": "shinchan.txt",
@@ -21,7 +22,6 @@ SCHEDULE = {
 }
 
 os.makedirs(HLS_DIR, exist_ok=True)
-
 
 def get_current_schedule_block():
     now = datetime.now(TIMEZONE)
@@ -41,22 +41,16 @@ def get_current_schedule_block():
 
     return selected_file, start_time
 
-
 def get_next_schedule_time(current_time_sec):
-    today = datetime.now(TIMEZONE)
     times = sorted(SCHEDULE.keys(), key=lambda t: int(t[:2]) * 60 + int(t[3:]))
-
     for t in times:
         h, m = map(int, t.split(":"))
         t_sec = h * 3600 + m * 60
         if t_sec > current_time_sec:
             return t_sec
-
-    # If past last slot, use tomorrow's first
-    first = times[0]
-    h, m = map(int, first.split(":"))
-    return (24 * 3600) + (h * 3600 + m * 60)
-
+    # if past last time, return next day first slot
+    h, m = map(int, times[0].split(":"))
+    return 86400 + (h * 3600 + m * 60)
 
 def load_state():
     if os.path.exists(STATE_FILE):
@@ -64,11 +58,9 @@ def load_state():
             return json.load(f)
     return {}
 
-
 def save_state(state):
     with open(STATE_FILE, "w") as f:
         json.dump(state, f)
-
 
 def get_video_duration(url):
     try:
@@ -82,7 +74,6 @@ def get_video_duration(url):
         print(f"[ERROR] Failed to get duration for {url}: {e}")
         return 0
 
-
 def get_video_playlist(playlist_file):
     playlist = []
     with open(playlist_file, "r", encoding="utf-8") as f:
@@ -94,11 +85,9 @@ def get_video_playlist(playlist_file):
                     playlist.append({"url": url, "duration": duration})
     return playlist
 
-
 def start_ffmpeg_stream():
     shutil.rmtree(HLS_DIR, ignore_errors=True)
     os.makedirs(HLS_DIR, exist_ok=True)
-
     state = load_state()
 
     while True:
@@ -127,21 +116,13 @@ def start_ffmpeg_stream():
             state[show_name] = {"index": 0, "offset": 0, "finished": True}
 
         while now_sec < block_end_time:
-            current_index = state[show_name]["index"]
-            if current_index >= len(playlist):
-                print(f"✅ All episodes of {show_name} played. Waiting for next scheduled show...")
-                while now_sec < block_end_time:
-                    time.sleep(10)
-                    now = datetime.now(TIMEZONE)
-                    now_sec = now.hour * 3600 + now.minute * 60 + now.second
-                break
-
+            current_index = state[show_name]["index"] % len(playlist)
             episode = playlist[current_index]
             url = episode["url"]
             duration = episode["duration"]
             seek_time = state[show_name]["offset"] if not state[show_name]["finished"] else 0
 
-            print(f"\n🎬 Streaming: {os.path.basename(url)} (Seek: {seek_time}s)")
+            print(f"\n🎬 Now Streaming: {os.path.basename(url)} (Seek: {seek_time}s)")
 
             filters = (
                 "[1:v]scale=100:100[logo];"
@@ -203,7 +184,6 @@ def start_ffmpeg_stream():
 
         time.sleep(1)
 
-
 @app.route('/')
 def home():
     now = datetime.now(TIMEZONE).strftime("%H:%M")
@@ -211,16 +191,13 @@ def home():
     show_name = os.path.basename(playlist_file).replace(".txt", "") if playlist_file else "Unknown"
     return f"<h1>📺 Cartoon Live TV</h1><p>🕒 {now} | 🎬 Now Showing: {show_name}</p><a href='/stream.m3u8'>▶️ Watch Stream</a>"
 
-
 @app.route('/stream.m3u8')
 def m3u8():
     return send_from_directory(HLS_DIR, "stream.m3u8")
 
-
 @app.route('/<path:filename>')
 def ts_files(filename):
     return send_from_directory(HLS_DIR, filename)
-
 
 if __name__ == "__main__":
     Thread(target=start_ffmpeg_stream, daemon=True).start()
