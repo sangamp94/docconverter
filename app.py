@@ -108,7 +108,7 @@ def start_ffmpeg_stream():
 
         if os.path.exists(show_logo):
             inputs += ["-i", show_logo]
-            filter_cmds.append(f"[{input_index}:v]scale=200:105[showlogo]")
+            filter_cmds.append(f"[{input_index}:v]scale=180:100[showlogo]")
             input_index += 1
         if os.path.exists(channel_logo):
             inputs += ["-i", channel_logo]
