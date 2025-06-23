@@ -1,7 +1,6 @@
 import subprocess
 import time
 import os
-import shutil
 import json
 from threading import Thread
 from flask import Flask, send_from_directory, render_template_string
@@ -24,7 +23,6 @@ SCHEDULE = {
 
 os.makedirs(HLS_DIR, exist_ok=True)
 
-# Safely load saved state
 def load_state():
     if os.path.exists(STATE_FILE):
         try:
@@ -35,12 +33,10 @@ def load_state():
             return {}
     return {}
 
-# Save playback state
 def save_state(state):
     with open(STATE_FILE, "w") as f:
         json.dump(state, f)
 
-# Get current show and time block
 def get_current_show():
     now = datetime.now(TIMEZONE)
     current_minutes = now.hour * 60 + now.minute
@@ -57,7 +53,6 @@ def get_current_show():
             break
     return current_show
 
-# Get video duration using ffprobe
 def get_video_duration(path_or_url):
     try:
         result = subprocess.run([
@@ -69,7 +64,6 @@ def get_video_duration(path_or_url):
         print(f"[ERROR] Failed to get video duration: {e}")
         return 0
 
-# Get current playlist, episode index, and start time offset
 def get_next_episode(state):
     current_show = get_current_show()
     if not current_show:
@@ -87,7 +81,6 @@ def get_next_episode(state):
 
     return current_show, playlist[index], offset
 
-# FFmpeg streaming thread
 def start_ffmpeg_stream():
     state = load_state()
     while True:
@@ -115,12 +108,40 @@ def start_ffmpeg_stream():
 
         print(f"[INFO] Now playing: {video_url} from {start_offset:.2f}s for {actual_duration:.2f}s")
 
-        cmd = [
+        show_name = show.replace('.txt', '')
+        logo_overlay = "logo.png"
+        show_overlay = f"{show_name}.jpg"
+
+        inputs = [
             "ffmpeg",
             "-ss", str(start_offset),
-            "-i", video_url,
-            "-t", str(actual_duration),
-            "-vf", f"drawtext=text='Now Playing':fontcolor=white:fontsize=24:x=10:y=10",
+            "-i", video_url
+        ]
+
+        input_count = 1
+        filters = []
+
+        if os.path.exists(show_overlay):
+            inputs += ["-i", show_overlay]
+            filters.append(f"[0:v][{input_count}:v]overlay=10:10:enable='between(t,0,2)'[tmp1]")
+            input_count += 1
+        else:
+            filters.append(f"[0:v]null[tmp1]")
+
+        if os.path.exists(logo_overlay):
+            inputs += ["-i", logo_overlay]
+            # Fade-in animation for logo.png over 2 seconds
+            filters.append(f"[tmp1][{input_count}:v]overlay=W-w-10:10:enable='between(t,0,2)':alpha='if(lt(t,2),t/2,1)'[tmp2]")
+            final_map = "[tmp2]"
+        else:
+            final_map = "[tmp1]"
+
+        filters.append(f"{final_map}drawtext=text='Now Playing':fontcolor=white:fontsize=24:x=10:y=H-th-10[out]")
+
+        cmd = inputs + [
+            "-filter_complex", ";".join(filters),
+            "-map", "[out]",
+            "-map", "0:a?",
             "-c:v", "libx264",
             "-c:a", "aac",
             "-f", "hls",
@@ -133,7 +154,6 @@ def start_ffmpeg_stream():
         process = subprocess.Popen(cmd)
         process.wait()
 
-        # Update state after playing
         if actual_duration + start_offset >= video_duration:
             state[show]["index"] += 1
             state[show]["offset"] = 0
@@ -148,7 +168,7 @@ def index():
     <!DOCTYPE html>
     <html>
     <head>
-        <title>Streamify TV</title>
+        <title>📺 Streamify TV</title>
     </head>
     <body style="background:black; color:white; text-align:center;">
         <h1>📺 Streamify TV</h1>
