@@ -19,6 +19,7 @@ SCHEDULE = {
     "15:00": "chhota.txt",
     "18:00": "shinchan.txt",
     "19:00": "ram.txt",
+    "20:00": "ps11.txt",
     
 }
 
