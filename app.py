@@ -9,9 +9,8 @@ import pytz
 
 app = Flask(__name__)
 HLS_DIR = "/tmp/hls"
-LOGO_FILE = "logo.png"
-TIMEZONE = pytz.timezone("Asia/Kolkata")
 STATE_FILE = "state.json"
+TIMEZONE = pytz.timezone("Asia/Kolkata")
 
 SCHEDULE = {
     "09:00": "pokemon.txt",
@@ -28,8 +27,7 @@ def load_state():
         try:
             with open(STATE_FILE, "r") as f:
                 return json.load(f)
-        except json.JSONDecodeError:
-            print("[WARN] state.json was empty or corrupted. Resetting.")
+        except:
             return {}
     return {}
 
@@ -42,107 +40,104 @@ def get_current_show():
     current_minutes = now.hour * 60 + now.minute
     sorted_times = sorted(SCHEDULE.items())
 
-    current_show = None
-    for i, (time_str, file) in enumerate(sorted_times):
-        start_minutes = int(time_str.split(":")[0]) * 60 + int(time_str.split(":")[1])
-        end_minutes = int(sorted_times[(i + 1) % len(sorted_times)][0].split(":")[0]) * 60 + int(sorted_times[(i + 1) % len(sorted_times)][0].split(":")[1])
-        if end_minutes <= start_minutes:
-            end_minutes += 24 * 60
-        if start_minutes <= current_minutes < end_minutes:
-            current_show = file
-            break
-    return current_show
+    for i, (time_str, show_file) in enumerate(sorted_times):
+        start = int(time_str.split(":")[0]) * 60 + int(time_str.split(":")[1])
+        end_index = (i + 1) % len(sorted_times)
+        end = int(sorted_times[end_index][0].split(":")[0]) * 60 + int(sorted_times[end_index][0].split(":")[1])
+        if end <= start:
+            end += 24 * 60
+        if start <= current_minutes < end:
+            return show_file
+    return None
 
-def get_video_duration(path_or_url):
+def get_video_duration(url):
     try:
         result = subprocess.run([
             "ffprobe", "-v", "error", "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1", path_or_url
+            "-of", "default=noprint_wrappers=1:nokey=1", url
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
         return float(result.stdout.strip())
     except Exception as e:
-        print(f"[ERROR] Failed to get video duration: {e}")
+        print(f"[ERROR] Cannot get video duration: {e}")
         return 0
 
 def get_next_episode(state):
-    current_show = get_current_show()
-    if not current_show:
+    show_file = get_current_show()
+    if not show_file:
         return None, None, 0
 
-    state.setdefault(current_show, {"index": 0, "offset": 0})
-    playlist = open(current_show).read().strip().splitlines()
+    state.setdefault(show_file, {"index": 0, "offset": 0})
+    playlist = open(show_file).read().strip().splitlines()
 
-    index = state[current_show]["index"]
-    offset = state[current_show]["offset"]
+    index = state[show_file]["index"]
+    offset = state[show_file]["offset"]
 
     if index >= len(playlist):
         index = 0
         offset = 0
 
-    return current_show, playlist[index], offset
+    return show_file, playlist[index], offset
 
 def start_ffmpeg_stream():
     state = load_state()
+
     while True:
-        show, video_url, start_offset = get_next_episode(state)
-        if not show or not video_url:
+        show_file, video_url, start_offset = get_next_episode(state)
+        if not show_file or not video_url:
             print("[INFO] No show scheduled.")
             time.sleep(10)
             continue
 
+        # calculate remaining play time
         now = datetime.now(TIMEZONE)
         current_minutes = now.hour * 60 + now.minute
-
         sorted_times = sorted(SCHEDULE.items())
-        show_start_minutes = int([k for k, v in sorted_times if v == show][0].split(":")[0]) * 60 + int([k for k, v in sorted_times if v == show][0].split(":")[1])
-        next_index = (list(SCHEDULE.values()).index(show) + 1) % len(sorted_times)
-        show_end_minutes = int(sorted_times[next_index][0].split(":")[0]) * 60 + int(sorted_times[next_index][0].split(":")[1])
-        if show_end_minutes <= show_start_minutes:
-            show_end_minutes += 24 * 60
-        remaining_time = (show_end_minutes - current_minutes) * 60
+        show_start = int([k for k, v in sorted_times if v == show_file][0].split(":")[0]) * 60 + int([k for k, v in sorted_times if v == show_file][0].split(":")[1])
+        next_index = (list(SCHEDULE.values()).index(show_file) + 1) % len(sorted_times)
+        show_end = int(sorted_times[next_index][0].split(":")[0]) * 60 + int(sorted_times[next_index][0].split(":")[1])
+        if show_end <= show_start:
+            show_end += 24 * 60
+        remaining_time = (show_end - current_minutes) * 60
 
         video_duration = get_video_duration(video_url)
         play_time = video_duration - start_offset
+        actual_duration = min(play_time, remaining_time)
 
-        actual_duration = min(remaining_time, play_time)
+        print(f"[INFO] Now Playing: {video_url} ({actual_duration:.1f}s from {start_offset:.1f}s)")
 
-        print(f"[INFO] Now playing: {video_url} from {start_offset:.2f}s for {actual_duration:.2f}s")
-
-        show_name = show.replace('.txt', '')
-        logo_overlay = "logo.png"
-        show_overlay = f"{show_name}.jpg"
+        show_name = show_file.replace(".txt", "")
+        show_logo = f"{show_name}.jpg"
+        channel_logo = "logo.png"
 
         inputs = [
-            "ffmpeg",
-            "-ss", str(start_offset),
-            "-i", video_url
+            "ffmpeg", "-ss", str(start_offset), "-i", video_url
         ]
-
         input_index = 1
         filters = []
 
-        if os.path.exists(show_overlay):
-            inputs += ["-i", show_overlay]
+        # overlay show logo (top-left)
+        if os.path.exists(show_logo):
+            inputs += ["-i", show_logo]
             filters.append(f"[0:v][{input_index}:v]overlay=10:10[tmp1]")
             input_index += 1
         else:
             filters.append("[0:v]null[tmp1]")
 
-        if os.path.exists(logo_overlay):
-            inputs += ["-i", logo_overlay]
+        # overlay channel logo (top-right)
+        if os.path.exists(channel_logo):
+            inputs += ["-i", channel_logo]
             filters.append(f"[tmp1][{input_index}:v]overlay=W-w-10:10[tmp2]")
-            final_map = "[tmp2]"
+            final = "[tmp2]"
         else:
-            final_map = "[tmp1]"
+            final = "[tmp1]"
 
-        filters.append(f"{final_map}drawtext=text='Now Playing':fontcolor=white:fontsize=24:x=10:y=H-th-10[out]")
+        # draw "Now Playing" text at bottom
+        filters.append(f"{final}drawtext=text='Now Playing':fontcolor=white:fontsize=24:x=10:y=H-th-10[out]")
 
         cmd = inputs + [
             "-filter_complex", ";".join(filters),
-            "-map", "[out]",
-            "-map", "0:a?",
-            "-c:v", "libx264",
-            "-c:a", "aac",
+            "-map", "[out]", "-map", "0:a?",
+            "-c:v", "libx264", "-c:a", "aac",
             "-f", "hls",
             "-hls_time", "5",
             "-hls_list_size", "10",
@@ -153,25 +148,23 @@ def start_ffmpeg_stream():
         process = subprocess.Popen(cmd)
         process.wait()
 
-        if actual_duration + start_offset >= video_duration:
-            state[show]["index"] += 1
-            state[show]["offset"] = 0
+        # update state
+        if start_offset + actual_duration >= video_duration:
+            state[show_file]["index"] += 1
+            state[show_file]["offset"] = 0
         else:
-            state[show]["offset"] += actual_duration
+            state[show_file]["offset"] += actual_duration
 
         save_state(state)
 
 @app.route("/")
 def index():
     return render_template_string("""
-    <!DOCTYPE html>
     <html>
-    <head>
-        <title>📺 Streamify TV</title>
-    </head>
+    <head><title>Streamify TV</title></head>
     <body style="background:black; color:white; text-align:center;">
         <h1>📺 Streamify TV</h1>
-        <video controls autoplay width="640" height="360">
+        <video width="640" height="360" controls autoplay>
             <source src="/stream.m3u8" type="application/vnd.apple.mpegurl">
         </video>
     </body>
@@ -179,7 +172,7 @@ def index():
     """)
 
 @app.route("/<path:path>")
-def static_proxy(path):
+def serve_file(path):
     return send_from_directory(HLS_DIR, path)
 
 if __name__ == "__main__":
