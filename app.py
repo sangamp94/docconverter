@@ -12,6 +12,8 @@ TIMEZONE = pytz.timezone("Asia/Kolkata")
 
 # Schedule: time (HH:MM) → playlist file
 SCHEDULE = {
+    "12:00": "mov.txt",
+    "08:00": "motu.txt",
     "09:00": "pokemon.txt",
     "10:45": "chhota.txt",
     "12:00": "doraemon.txt",
