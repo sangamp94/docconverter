@@ -1,14 +1,17 @@
-import subprocess, time, os, json
+import subprocess
+import time
+import os
 from threading import Thread
-from flask import Flask, send_from_directory, render_template_string, Response
-from datetime import datetime
+from flask import Flask, send_from_directory, render_template_string
+from datetime import datetime, timedelta
 import pytz
+import signal
 
 app = Flask(__name__)
 HLS_DIR = "/tmp/hls"
-STATE_FILE = "state.json"
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
+# Schedule format: "HH:MM" -> playlist filename
 SCHEDULE = {
     "09:00": "pokemon.txt",
     "10:45": "chhota.txt",
@@ -19,19 +22,6 @@ SCHEDULE = {
 }
 
 os.makedirs(HLS_DIR, exist_ok=True)
-
-def load_state():
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE, "r") as f:
-                return json.load(f)
-        except:
-            return {}
-    return {}
-
-def save_state(state):
-    with open(STATE_FILE, "w") as f:
-        json.dump(state, f)
 
 def get_current_show():
     now = datetime.now(TIMEZONE)
@@ -48,149 +38,107 @@ def get_current_show():
             return show_file
     return None
 
-def get_video_duration(url):
-    try:
-        result = subprocess.run([
-            "ffprobe", "-v", "error", "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1", url
-        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
-        return float(result.stdout.strip())
-    except Exception as e:
-        print(f"[ERROR] Cannot get video duration: {e}")
-        return 0
+def run_ffmpeg_live_stream(video_url):
+    # Clean up previous HLS files
+    for f in os.listdir(HLS_DIR):
+        try:
+            os.remove(os.path.join(HLS_DIR, f))
+        except:
+            pass
 
-def get_next_episode(state):
-    show_file = get_current_show()
-    if not show_file:
-        return None, None, 0
+    cmd = [
+        "ffmpeg",
+        "-re",                  # read input at native rate to simulate live
+        "-i", video_url,
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "28",
+        "-c:a", "aac",
+        "-f", "hls",
+        "-hls_time", "4",           # 4-second segments
+        "-hls_list_size", "5",      # keep last 5 segments (sliding window)
+        "-hls_flags", "delete_segments+omit_endlist+independent_segments+program_date_time",
+        os.path.join(HLS_DIR, "stream.m3u8"),
+    ]
 
-    state.setdefault(show_file, {"index": 0, "offset": 0})
-    playlist = open(show_file).read().strip().splitlines()
+    print(f"[INFO] Starting ffmpeg for {video_url}")
+    process = subprocess.Popen(cmd)
+    return process
 
-    index = state[show_file]["index"]
-    offset = state[show_file]["offset"]
-
-    if index >= len(playlist):
-        index = 0
-        offset = 0
-
-    return show_file, playlist[index], offset
-
-def start_ffmpeg_stream():
-    state = load_state()
+def streaming_loop():
+    current_process = None
+    current_show = None
+    playlist = []
+    episode_index = 0
 
     while True:
-        show_file, video_url, start_offset = get_next_episode(state)
-        if not show_file or not video_url:
-            print("[INFO] No show scheduled.")
-            time.sleep(10)
-            continue
+        show_file = get_current_show()
 
-        now = datetime.now(TIMEZONE)
-        current_minutes = now.hour * 60 + now.minute
-        sorted_times = sorted(SCHEDULE.items())
-        show_start = int([k for k, v in sorted_times if v == show_file][0].split(":")[0]) * 60 + int([k for k, v in sorted_times if v == show_file][0].split(":")[1])
-        next_index = (list(SCHEDULE.values()).index(show_file) + 1) % len(sorted_times)
-        show_end = int(sorted_times[next_index][0].split(":")[0]) * 60 + int(sorted_times[next_index][0].split(":")[1])
-        if show_end <= show_start:
-            show_end += 24 * 60
-        remaining_time = (show_end - current_minutes) * 60
+        if show_file != current_show:
+            # Show changed, stop old ffmpeg and start new show
+            if current_process:
+                print(f"[INFO] Stopping ffmpeg for previous show {current_show}")
+                current_process.send_signal(signal.SIGINT)
+                current_process.wait()
+                current_process = None
 
-        video_duration = get_video_duration(video_url)
-        play_time = video_duration - start_offset
-        actual_duration = min(play_time, remaining_time)
+            current_show = show_file
+            episode_index = 0
 
-        print(f"[INFO] Now Playing: {video_url} ({actual_duration:.1f}s from {start_offset:.1f}s)")
+            if current_show:
+                # Load playlist episodes
+                try:
+                    with open(current_show, "r") as f:
+                        playlist = [line.strip() for line in f if line.strip()]
+                    print(f"[INFO] Scheduled show: {current_show} with {len(playlist)} episodes")
+                except Exception as e:
+                    print(f"[ERROR] Cannot load playlist {current_show}: {e}")
+                    playlist = []
+            else:
+                playlist = []
 
-        show_name = show_file.replace(".txt", "")
-        show_logo = f"{show_name}.jpg"
-        channel_logo = "logo.png"
+        if current_show and playlist:
+            if episode_index >= len(playlist):
+                print(f"[INFO] Finished all episodes in {current_show}, waiting for next schedule")
+                # Wait for schedule change
+                time.sleep(10)
+                continue
 
-        inputs = [
-            "ffmpeg",
-            "-reconnect", "1",
-            "-reconnect_streamed", "1",
-            "-reconnect_delay_max", "5",
-            "-timeout", "5000000",
-            "-ss", str(start_offset),
-            "-i", video_url
-        ]
-        filter_cmds = []
-        input_index = 1
+            video_url = playlist[episode_index]
+            current_process = run_ffmpeg_live_stream(video_url)
+            # Wait for ffmpeg to finish streaming this episode
+            retcode = current_process.wait()
 
-        if os.path.exists(show_logo):
-            inputs += ["-i", show_logo]
-            filter_cmds.append(f"[{input_index}:v]scale=200:105[showlogo]")
-            input_index += 1
-        if os.path.exists(channel_logo):
-            inputs += ["-i", channel_logo]
-            filter_cmds.append(f"[{input_index}:v]scale=200:100[channellogo]")
-            input_index += 1
+            if retcode != 0:
+                print(f"[ERROR] ffmpeg exited with code {retcode}, restarting stream")
+            else:
+                print(f"[INFO] Finished episode {episode_index + 1} of {current_show}")
 
-        overlay_chain = "[0:v]"
-        if os.path.exists(show_logo):
-            overlay_chain += "[showlogo]overlay=10:10[tmp1];"
+            episode_index += 1
         else:
-            overlay_chain += "null[tmp1];"
-        if os.path.exists(channel_logo):
-            overlay_chain += "[tmp1][channellogo]overlay=W-w-10:10[out]"
-        else:
-            overlay_chain = overlay_chain.replace("[tmp1];", "[out]")
-
-        filter_complex = ";".join(filter_cmds) + ";" + overlay_chain
-
-        cmd = inputs + [
-            "-filter_complex", filter_complex,
-            "-map", "[out]", "-map", "0:a?",
-            "-c:v", "libx264", "-c:a", "aac",
-            "-f", "hls",
-            "-hls_time", "5",
-            "-hls_list_size", "6",
-            "-hls_flags", "delete_segments+omit_endlist+program_date_time",
-            os.path.join(HLS_DIR, "stream.m3u8")
-        ]
-
-        process = subprocess.Popen(cmd)
-        process.wait()
-
-        if start_offset + actual_duration >= video_duration:
-            state[show_file]["index"] += 1
-            state[show_file]["offset"] = 0
-        else:
-            state[show_file]["offset"] += actual_duration
-
-        save_state(state)
+            print("[INFO] No show scheduled or empty playlist, waiting 30 seconds")
+            time.sleep(30)
 
 @app.route("/")
 def index():
     return render_template_string("""
     <html>
-    <head><title>Streamify TV</title></head>
+    <head><title>Streamify TV - Live</title></head>
     <body style="background:black; color:white; text-align:center;">
-        <h1>📺 Streamify TV</h1>
-        <video width="640" height="360" controls autoplay>
+        <h1>📺 Streamify TV - Live</h1>
+        <video width="640" height="360" controls autoplay muted>
             <source src="/stream.m3u8" type="application/vnd.apple.mpegurl">
+            Your browser does not support the video tag.
         </video>
+        <p>Currently streaming live scheduled shows.</p>
     </body>
     </html>
     """)
 
 @app.route("/<path:path>")
 def serve_file(path):
-    file_path = os.path.join(HLS_DIR, path)
-    if not os.path.exists(file_path):
-        return "Not found", 404
-    with open(file_path, "rb") as f:
-        data = f.read()
-    response = Response(
-        data,
-        mimetype="application/vnd.apple.mpegurl" if path.endswith(".m3u8") else "video/MP2T"
-    )
-    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-    response.headers["Pragma"] = "no-cache"
-    response.headers["Expires"] = "0"
-    return response
+    return send_from_directory(HLS_DIR, path)
 
 if __name__ == "__main__":
-    Thread(target=start_ffmpeg_stream, daemon=True).start()
+    Thread(target=streaming_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=10000)
