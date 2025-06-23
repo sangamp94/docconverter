@@ -118,20 +118,19 @@ def start_ffmpeg_stream():
             "-i", video_url
         ]
 
-        input_count = 1
+        input_index = 1
         filters = []
 
         if os.path.exists(show_overlay):
             inputs += ["-i", show_overlay]
-            filters.append(f"[0:v][{input_count}:v]overlay=10:10:enable='between(t,0,2)'[tmp1]")
-            input_count += 1
+            filters.append(f"[0:v][{input_index}:v]overlay=10:10[tmp1]")
+            input_index += 1
         else:
-            filters.append(f"[0:v]null[tmp1]")
+            filters.append("[0:v]null[tmp1]")
 
         if os.path.exists(logo_overlay):
             inputs += ["-i", logo_overlay]
-            # Fade-in animation for logo.png over 2 seconds
-            filters.append(f"[tmp1][{input_count}:v]overlay=W-w-10:10:enable='between(t,0,2)':alpha='if(lt(t,2),t/2,1)'[tmp2]")
+            filters.append(f"[tmp1][{input_index}:v]overlay=W-w-10:10[tmp2]")
             final_map = "[tmp2]"
         else:
             final_map = "[tmp1]"
