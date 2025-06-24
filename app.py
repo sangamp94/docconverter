@@ -1,6 +1,4 @@
-import subprocess
-import time
-import os
+import subprocess, time, os, requests
 from threading import Thread
 from flask import Flask, send_from_directory, render_template_string
 from datetime import datetime
@@ -10,7 +8,11 @@ app = Flask(__name__)
 HLS_DIR = "/tmp/hls"
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
-# Fixed schedule: time → playlist
+# 🧠 JSONBin Setup (Replace these!)
+BIN_ID = "685a3ffa8960c979a5b03d5e"  # 👈 From https://jsonbin.io/bin/xxxxx
+API_KEY = "$2a$10$ah8eQWRQVHF9QZYaxcNn8OidbFVYSpLtUhIA5N7DC5y4qkOJuOr1K"  # 👈 Keep this secret!
+
+# 🗂️ Schedule config
 SCHEDULE = {
     "00:00": "mov.txt",
     "08:00": "motu.txt",
@@ -28,6 +30,29 @@ SCHEDULE = {
 
 os.makedirs(HLS_DIR, exist_ok=True)
 
+# 🔁 JSONBin functions
+def load_progress():
+    try:
+        res = requests.get(f"https://api.jsonbin.io/v3/b/{BIN_ID}/latest", headers={
+            "X-Master-Key": API_KEY
+        })
+        return res.json()['record']
+    except Exception as e:
+        print(f"[ERROR] JSONBin load: {e}")
+        return {}
+
+def save_progress(progress):
+    try:
+        res = requests.put(f"https://api.jsonbin.io/v3/b/{BIN_ID}", json=progress, headers={
+            "Content-Type": "application/json",
+            "X-Master-Key": API_KEY
+        })
+        return res.status_code == 200
+    except Exception as e:
+        print(f"[ERROR] JSONBin save: {e}")
+        return False
+
+# ⏰ Time-based logic
 def get_current_show():
     now = datetime.now(TIMEZONE)
     current_minutes = now.hour * 60 + now.minute
@@ -50,22 +75,23 @@ def get_video_duration(url):
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
         return float(result.stdout.strip())
     except Exception as e:
-        print(f"[ERROR] Cannot get video duration: {e}")
+        print(f"[ERROR] FFprobe: {e}")
         return 0
 
+# 📺 FFmpeg stream generator
 def start_ffmpeg_stream():
     while True:
         show_file, elapsed_time, remaining_time = get_current_show()
-        print(f"[INFO] Scheduled show: {show_file} | Elapsed: {elapsed_time}s | Remaining: {remaining_time}s")
+        print(f"[INFO] Show: {show_file} | Elapsed: {elapsed_time}s | Remaining: {remaining_time}s")
         if not show_file:
-            print("[INFO] No show scheduled.")
+            print("[INFO] No scheduled show.")
             time.sleep(10)
             continue
 
         try:
             playlist = open(show_file).read().strip().splitlines()
         except:
-            print(f"[ERROR] Cannot read {show_file}")
+            print(f"[ERROR] Can't read {show_file}")
             time.sleep(10)
             continue
 
@@ -80,7 +106,7 @@ def start_ffmpeg_stream():
             cumulative += duration
 
         if not selected:
-            print("[INFO] No episode fits the current time slot.")
+            print("[INFO] No episode fits time slot.")
             time.sleep(10)
             continue
 
@@ -100,6 +126,15 @@ def start_ffmpeg_stream():
         show_logo = f"{show_name}.jpg"
         channel_logo = "logo.png"
 
+        # Update progress (optional but now supported)
+        progress = load_progress()
+        try:
+            progress[show_name] = playlist.index(video_url)
+            save_progress(progress)
+        except:
+            pass
+
+        # FFmpeg command
         inputs = ["ffmpeg", "-re", "-ss", str(start_offset), "-i", video_url]
         filter_cmds = []
         input_index = 1
@@ -135,7 +170,7 @@ def start_ffmpeg_stream():
             os.path.join(HLS_DIR, "stream.m3u8")
         ]
 
-        print("[FFmpeg CMD]", " ".join(cmd))  # Debug: print full command
+        print("[FFmpeg CMD]", " ".join(cmd))
 
         try:
             process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
