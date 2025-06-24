@@ -24,7 +24,7 @@ SCHEDULE = {
     "19:00": "ram.txt",
     "19:30": "pokemon.txt",
     "20:00": "ps11.txt",
-    "20:30": "j.txt",
+    "20:30": "pokemon.txt",
     "22:00": "doraemon.txt"
 }
 
