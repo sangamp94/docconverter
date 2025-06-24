@@ -21,7 +21,7 @@ SCHEDULE = {
     "12:00": "doraemon.txt",
     "13:00": "ps11.txt",
     "15:00": "chhota.txt",
-    "15:30": "mov.txt",
+    "15:15": "mov.txt",
     "18:00": "shinchan.txt",
     "19:00": "ram.txt",
     "20:00": "ps11.txt",
