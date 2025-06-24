@@ -25,7 +25,7 @@ SCHEDULE = {
     "19:30": "pokemon.txt",
     "20:00": "ps11.txt",
     "20:30": "pokemon.txt",
-    "22:00": "doraemon.txt"
+    "22:00": "ps11.txt"
 }
 
 os.makedirs(HLS_DIR, exist_ok=True)
