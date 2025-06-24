@@ -8,11 +8,9 @@ app = Flask(__name__)
 HLS_DIR = "/tmp/hls"
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
-# 🧠 JSONBin Setup (Replace these!)
-BIN_ID = "685a3ffa8960c979a5b03d5e"  # 👈 From https://jsonbin.io/bin/xxxxx
-API_KEY = "$2a$10$ah8eQWRQVHF9QZYaxcNn8OidbFVYSpLtUhIA5N7DC5y4qkOJuOr1K"  # 👈 Keep this secret!
+BIN_ID = "685a3ffa8960c979a5b03d5e"
+API_KEY = "$2a$10$ah8eQWRQVHF9QZYaxcNn8OidbFVYSpLtUhIA5N7DC5y4qkOJuOr1K"
 
-# 🗂️ Schedule config
 SCHEDULE = {
     "00:00": "mov.txt",
     "08:00": "motu.txt",
@@ -32,7 +30,6 @@ SCHEDULE = {
 
 os.makedirs(HLS_DIR, exist_ok=True)
 
-# 🔁 JSONBin functions
 def load_progress():
     try:
         res = requests.get(f"https://api.jsonbin.io/v3/b/{BIN_ID}/latest", headers={
@@ -54,7 +51,6 @@ def save_progress(progress):
         print(f"[ERROR] JSONBin save: {e}")
         return False
 
-# ⏰ Time-based logic
 def get_current_show():
     now = datetime.now(TIMEZONE)
     current_minutes = now.hour * 60 + now.minute
@@ -80,15 +76,16 @@ def get_video_duration(url):
         print(f"[ERROR] FFprobe: {e}")
         return 0
 
-# 📺 FFmpeg stream generator
 def start_ffmpeg_stream():
     while True:
         show_file, elapsed_time, remaining_time = get_current_show()
-        print(f"[INFO] Show: {show_file} | Elapsed: {elapsed_time}s | Remaining: {remaining_time}s")
         if not show_file:
             print("[INFO] No scheduled show.")
             time.sleep(10)
             continue
+
+        show_name = show_file.replace(".txt", "")
+        print(f"[INFO] Show: {show_file} | Elapsed: {elapsed_time}s | Remaining: {remaining_time}s")
 
         try:
             playlist = open(show_file).read().strip().splitlines()
@@ -97,46 +94,28 @@ def start_ffmpeg_stream():
             time.sleep(10)
             continue
 
-        cumulative = 0
-        selected = None
-        for video in playlist:
-            duration = get_video_duration(video)
-            if cumulative + duration > elapsed_time:
-                offset = elapsed_time - cumulative
-                selected = (video, offset)
-                break
-            cumulative += duration
+        # 🔁 Load saved progress
+        progress = load_progress()
+        episode_index = progress.get(show_name, 0)
 
-        if not selected:
-            print("[INFO] No episode fits time slot.")
-            time.sleep(10)
-            continue
+        if episode_index >= len(playlist):
+            episode_index = 0  # reset to start if out of range
 
-        video_url, start_offset = selected
+        video_url = playlist[episode_index]
+        start_offset = 0
         video_duration = get_video_duration(video_url)
-        play_time = video_duration - start_offset
-        actual_duration = min(play_time, remaining_time)
+        actual_duration = min(video_duration, remaining_time)
 
         if actual_duration <= 0:
             print("[INFO] Skipping — no time left.")
             time.sleep(5)
             continue
 
-        print(f"[PLAY] {video_url} (start: {start_offset:.1f}s, play: {actual_duration:.1f}s)")
+        print(f"[PLAY] {video_url} (Episode {episode_index}, Duration: {actual_duration:.1f}s)")
 
-        show_name = show_file.replace(".txt", "")
         show_logo = f"{show_name}.jpg"
         channel_logo = "logo.png"
 
-        # Update progress (optional but now supported)
-        progress = load_progress()
-        try:
-            progress[show_name] = playlist.index(video_url)
-            save_progress(progress)
-        except:
-            pass
-
-        # FFmpeg command
         inputs = ["ffmpeg", "-re", "-ss", str(start_offset), "-i", video_url]
         filter_cmds = []
         input_index = 1
@@ -182,6 +161,13 @@ def start_ffmpeg_stream():
 
             if os.path.exists(os.path.join(HLS_DIR, "stream.m3u8")):
                 print("[✅] HLS stream created.")
+                # ✅ Save next episode
+                try:
+                    progress[show_name] = episode_index + 1
+                    save_progress(progress)
+                    print(f"[💾] Saved progress: {show_name} = {episode_index + 1}")
+                except Exception as e:
+                    print(f"[ERROR] Failed to save progress: {e}")
             else:
                 print("[❌] stream.m3u8 not found.")
         except Exception as e:
