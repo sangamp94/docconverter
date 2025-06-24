@@ -10,7 +10,7 @@ app = Flask(__name__)
 HLS_DIR = "/tmp/hls"
 TIMEZONE = pytz.timezone("Asia/Kolkata")
 
-# Schedule: time (HH:MM) → playlist file
+# Fixed schedule: time → playlist
 SCHEDULE = {
     "00:00": "mov.txt",
     "08:00": "motu.txt",
@@ -21,11 +21,9 @@ SCHEDULE = {
     "15:00": "chhota.txt",
     "18:00": "shinchan.txt",
     "19:00": "ram.txt",
-    "20:00": "ps11.txt", 
+    "20:00": "ps11.txt",
     "20:30": "j.txt",
     "22:00": "doraemon.txt"
-    
-    
 }
 
 os.makedirs(HLS_DIR, exist_ok=True)
@@ -34,7 +32,6 @@ def get_current_show():
     now = datetime.now(TIMEZONE)
     current_minutes = now.hour * 60 + now.minute
     sorted_times = sorted(SCHEDULE.items())
-
     for i, (time_str, show_file) in enumerate(sorted_times):
         start = int(time_str.split(":")[0]) * 60 + int(time_str.split(":")[1])
         end_index = (i + 1) % len(sorted_times)
@@ -59,6 +56,7 @@ def get_video_duration(url):
 def start_ffmpeg_stream():
     while True:
         show_file, elapsed_time, remaining_time = get_current_show()
+        print(f"[INFO] Scheduled show: {show_file} | Elapsed: {elapsed_time}s | Remaining: {remaining_time}s")
         if not show_file:
             print("[INFO] No show scheduled.")
             time.sleep(10)
@@ -125,7 +123,7 @@ def start_ffmpeg_stream():
         else:
             overlay_chain = overlay_chain.replace("[tmp1];", "[out]")
 
-        filter_complex = ";".join(filter_cmds) + ";" + overlay_chain
+        filter_complex = ";".join(filter_cmds) + ";" + overlay_chain if filter_cmds else overlay_chain
 
         cmd = inputs + [
             "-t", str(actual_duration),
@@ -137,9 +135,18 @@ def start_ffmpeg_stream():
             os.path.join(HLS_DIR, "stream.m3u8")
         ]
 
+        print("[FFmpeg CMD]", " ".join(cmd))  # Debug: print full command
+
         try:
-            process = subprocess.Popen(cmd)
-            process.wait()
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            stdout, stderr = process.communicate()
+            print("[FFmpeg STDOUT]", stdout.decode())
+            print("[FFmpeg STDERR]", stderr.decode())
+
+            if os.path.exists(os.path.join(HLS_DIR, "stream.m3u8")):
+                print("[✅] HLS stream created.")
+            else:
+                print("[❌] stream.m3u8 not found.")
         except Exception as e:
             print(f"[ERROR] FFmpeg crashed: {e}")
             time.sleep(5)
@@ -151,7 +158,7 @@ def index():
     <head><title>📺 Streamify Live</title></head>
     <body style="background:black; color:white; text-align:center;">
         <h1>📺 Streamify Live TV</h1>
-        <video width="640" height="360" controls autoplay>
+        <video width="640" height="360" controls autoplay playsinline>
             <source src="/stream.m3u8" type="application/vnd.apple.mpegurl">
         </video>
     </body>
