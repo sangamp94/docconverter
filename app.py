@@ -76,12 +76,28 @@ def get_video_duration(url):
         return 0
 
 def start_ffmpeg_stream():
+    last_show = None
     while True:
+        now = datetime.now(TIMEZONE)
+
+        # Wait until start of next minute to align with schedule
+        time_to_wait = 60 - now.second - now.microsecond / 1e6
+        if time_to_wait > 0:
+            print(f"[WAITING] {time_to_wait:.2f}s to align with scheduled minute")
+            time.sleep(time_to_wait)
+
         show_file, elapsed_time, remaining_time = get_current_show()
+
         if not show_file:
             print("[INFO] No scheduled show.")
-            time.sleep(10)
+            time.sleep(5)
             continue
+
+        if show_file == last_show:
+            print("[INFO] Already playing this slot. Skipping until next minute.")
+            time.sleep(1)
+            continue
+        last_show = show_file
 
         show_name = show_file.replace(".txt", "")
         print(f"[INFO] Show: {show_file} | Elapsed: {elapsed_time}s | Remaining: {remaining_time}s")
@@ -93,12 +109,11 @@ def start_ffmpeg_stream():
             time.sleep(10)
             continue
 
-        # 🔁 Load saved progress
         progress = load_progress()
         episode_index = progress.get(show_name, 0)
 
         if episode_index >= len(playlist):
-            episode_index = 0  # reset to start if out of range
+            episode_index = 0
 
         video_url = playlist[episode_index]
         start_offset = 0
@@ -160,7 +175,6 @@ def start_ffmpeg_stream():
 
             if os.path.exists(os.path.join(HLS_DIR, "stream.m3u8")):
                 print("[✅] HLS stream created.")
-                # ✅ Save next episode
                 try:
                     progress[show_name] = episode_index + 1
                     save_progress(progress)
