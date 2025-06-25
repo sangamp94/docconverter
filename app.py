@@ -78,36 +78,19 @@ def get_video_duration(url):
 
 def start_ffmpeg_stream():
     last_show = None
-    fallback_mode = False
 
     while True:
-        now = datetime.now(TIMEZONE)
-        time.sleep(60 - now.second)  # Align to minute
-
         show_file, elapsed_time, remaining_time = get_current_show()
 
-        # If nothing scheduled, fallback
+        fallback_mode = False
         if not show_file:
             show_file = "chhota.txt"
             elapsed_time = 0
-            remaining_time = 300  # fallback duration (5 min)
+            remaining_time = 300
             fallback_mode = True
             print("[INFO] No scheduled show. Playing fallback: chhota bheem")
-        else:
-            fallback_mode = False
 
-        # Skip repeating same scheduled show
-        if show_file == last_show and not fallback_mode:
-            print("[INFO] Already streaming scheduled show. Skipping...")
-            continue
-
-        # Allow fallback interruption
-        if fallback_mode and last_show != "chhota.txt":
-            print("[INTERRUPT] Switching from fallback to scheduled show.")
-
-        last_show = show_file
         show_name = show_file.replace(".txt", "")
-
         try:
             playlist = open(show_file).read().strip().splitlines()
         except:
@@ -185,7 +168,9 @@ def start_ffmpeg_stream():
                 print("[❌] stream.m3u8 not found.")
         except Exception as e:
             print(f"[ERROR] FFmpeg crashed: {e}")
-            time.sleep(5)
+
+        last_show = show_file
+        time.sleep(1)  # Optional: wait a bit before next iteration
 
 @app.route("/")
 def index():
