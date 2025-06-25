@@ -12,19 +12,18 @@ BIN_ID = "685a3ffa8960c979a5b03d5e"
 API_KEY = "$2a$10$ah8eQWRQVHF9QZYaxcNn8OidbFVYSpLtUhIA5N7DC5y4qkOJuOr1K"
 
 SCHEDULE = {
-    "00:00": "pokemon.txt",
-    "04:00": "bhajan.txt",
+    "00:00": "mov.txt",
     "08:00": "motu.txt",
     "09:00": "pokemon.txt",
-    "10:30": "chhota.txt",
+    "10:45": "chhota.txt",
     "12:00": "doraemon.txt",
     "13:00": "ps11.txt",
-    "15:00": "krishna.txt",
-    "17:00": "doraemon.txt",
+    "15:00": "j.txt",
     "18:00": "shinchan.txt",
     "19:00": "ram.txt",
     "19:30": "pokemon.txt",
-    "20:30": "chhota.txt",
+    "20:00": "ps11.txt",
+    "20:30": "pokemon.txt",
     "22:00": "ps11.txt"
 }
 
@@ -82,31 +81,26 @@ def start_ffmpeg_stream():
 
     while True:
         now = datetime.now(TIMEZONE)
-
-        # Align with the minute
-        time_to_wait = 60 - now.second - now.microsecond / 1e6
-        if time_to_wait > 0:
-            time.sleep(time_to_wait)
+        time.sleep(60 - now.second)  # Align to minute
 
         show_file, elapsed_time, remaining_time = get_current_show()
 
-        # Fallback if no scheduled show
+        # If nothing scheduled, fallback
         if not show_file:
             show_file = "chhota.txt"
             elapsed_time = 0
-            remaining_time = 300  # shorter fallback chunk
+            remaining_time = 300  # fallback duration (5 min)
             fallback_mode = True
             print("[INFO] No scheduled show. Playing fallback: chhota bheem")
         else:
             fallback_mode = False
 
-        # Skip repeating the same scheduled show (but allow fallback repeat check)
+        # Skip repeating same scheduled show
         if show_file == last_show and not fallback_mode:
-            print("[INFO] Already streaming scheduled show. Waiting...")
-            time.sleep(5)
+            print("[INFO] Already streaming scheduled show. Skipping...")
             continue
 
-        # If we are in fallback, re-check schedule after short segment
+        # Allow fallback interruption
         if fallback_mode and last_show != "chhota.txt":
             print("[INTERRUPT] Switching from fallback to scheduled show.")
 
@@ -122,25 +116,26 @@ def start_ffmpeg_stream():
 
         progress = load_progress()
         episode_index = progress.get(show_name, 0)
+
         if episode_index >= len(playlist):
             episode_index = 0
 
         video_url = playlist[episode_index]
-        start_offset = 0
         video_duration = get_video_duration(video_url)
-        actual_duration = min(video_duration, remaining_time)
 
-        if actual_duration <= 0:
-            print("[INFO] Skipping — no time left.")
-            time.sleep(5)
+        if remaining_time < 60:
+            print("[SKIP] Not enough time left to start new episode.")
+            time.sleep(10)
             continue
+
+        actual_duration = min(video_duration, remaining_time)
 
         print(f"[PLAY] {video_url} (Episode {episode_index}, Duration: {actual_duration:.1f}s)")
 
         show_logo = f"{show_name}.jpg"
         channel_logo = "logo.png"
 
-        inputs = ["ffmpeg", "-re", "-ss", str(start_offset), "-i", video_url]
+        inputs = ["ffmpeg", "-re", "-ss", "0", "-i", video_url]
         filter_cmds = []
         input_index = 1
 
@@ -182,10 +177,9 @@ def start_ffmpeg_stream():
 
             if os.path.exists(os.path.join(HLS_DIR, "stream.m3u8")):
                 print("[✅] HLS stream created.")
-                if not fallback_mode:
-                    progress[show_name] = episode_index + 1
-                    save_progress(progress)
-                    print(f"[💾] Saved progress: {show_name} = {episode_index + 1}")
+                progress[show_name] = episode_index + 1
+                save_progress(progress)
+                print(f"[💾] Saved progress: {show_name} = {episode_index + 1}")
             else:
                 print("[❌] stream.m3u8 not found.")
         except Exception as e:
