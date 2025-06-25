@@ -12,18 +12,19 @@ BIN_ID = "685a3ffa8960c979a5b03d5e"
 API_KEY = "$2a$10$ah8eQWRQVHF9QZYaxcNn8OidbFVYSpLtUhIA5N7DC5y4qkOJuOr1K"
 
 SCHEDULE = {
-    "00:00": "mov.txt",
+    "00:00": "pokemon.txt",
+    "04:00": "bhajan.txt",
     "08:00": "motu.txt",
     "09:00": "pokemon.txt",
-    "10:45": "chhota.txt",
+    "10:30": "chhota.txt",
     "12:00": "doraemon.txt",
     "13:00": "ps11.txt",
-    "15:00": "j.txt",
+    "15:00": "krishna.txt",
+    "17:00": "doraemon.txt",
     "18:00": "shinchan.txt",
     "19:00": "ram.txt",
     "19:30": "pokemon.txt",
-    "20:00": "ps11.txt",
-    "20:30": "pokemon.txt",
+    "20:30": "chhota.txt",
     "22:00": "ps11.txt"
 }
 
