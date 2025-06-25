@@ -77,30 +77,40 @@ def get_video_duration(url):
 
 def start_ffmpeg_stream():
     last_show = None
+    fallback_mode = False
+
     while True:
         now = datetime.now(TIMEZONE)
 
-        # Wait until start of next minute to align with schedule
+        # Align with the minute
         time_to_wait = 60 - now.second - now.microsecond / 1e6
         if time_to_wait > 0:
-            print(f"[WAITING] {time_to_wait:.2f}s to align with scheduled minute")
             time.sleep(time_to_wait)
 
         show_file, elapsed_time, remaining_time = get_current_show()
 
+        # Fallback if no scheduled show
         if not show_file:
-            print("[INFO] No scheduled show.")
+            show_file = "chhota.txt"
+            elapsed_time = 0
+            remaining_time = 300  # shorter fallback chunk
+            fallback_mode = True
+            print("[INFO] No scheduled show. Playing fallback: chhota bheem")
+        else:
+            fallback_mode = False
+
+        # Skip repeating the same scheduled show (but allow fallback repeat check)
+        if show_file == last_show and not fallback_mode:
+            print("[INFO] Already streaming scheduled show. Waiting...")
             time.sleep(5)
             continue
 
-        if show_file == last_show:
-            print("[INFO] Already playing this slot. Skipping until next minute.")
-            time.sleep(1)
-            continue
-        last_show = show_file
+        # If we are in fallback, re-check schedule after short segment
+        if fallback_mode and last_show != "chhota.txt":
+            print("[INTERRUPT] Switching from fallback to scheduled show.")
 
+        last_show = show_file
         show_name = show_file.replace(".txt", "")
-        print(f"[INFO] Show: {show_file} | Elapsed: {elapsed_time}s | Remaining: {remaining_time}s")
 
         try:
             playlist = open(show_file).read().strip().splitlines()
@@ -111,7 +121,6 @@ def start_ffmpeg_stream():
 
         progress = load_progress()
         episode_index = progress.get(show_name, 0)
-
         if episode_index >= len(playlist):
             episode_index = 0
 
@@ -160,27 +169,22 @@ def start_ffmpeg_stream():
             "-filter_complex", filter_complex,
             "-map", "[out]", "-map", "0:a?",
             "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
-            "-f", "hls", "-hls_time", "5", "-hls_list_size", "10",
+            "-f", "hls", "-hls_time", "5", "-hls_list_size", "3",
             "-hls_flags", "delete_segments+omit_endlist",
             os.path.join(HLS_DIR, "stream.m3u8")
         ]
 
-        print("[FFmpeg CMD]", " ".join(cmd))
-
         try:
             process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             stdout, stderr = process.communicate()
-            print("[FFmpeg STDOUT]", stdout.decode())
             print("[FFmpeg STDERR]", stderr.decode())
 
             if os.path.exists(os.path.join(HLS_DIR, "stream.m3u8")):
                 print("[✅] HLS stream created.")
-                try:
+                if not fallback_mode:
                     progress[show_name] = episode_index + 1
                     save_progress(progress)
                     print(f"[💾] Saved progress: {show_name} = {episode_index + 1}")
-                except Exception as e:
-                    print(f"[ERROR] Failed to save progress: {e}")
             else:
                 print("[❌] stream.m3u8 not found.")
         except Exception as e:
